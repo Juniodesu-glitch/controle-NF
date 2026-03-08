@@ -206,8 +206,14 @@ async function garantirPerfilPorAuth(authUser, nomeHint) {
     const email = String(authUser.email).toLowerCase();
 
     let rows = await supabaseRequest(
-        `${supabaseConfig.tables.perfis}?select=*&auth_user_id=eq.${encodeURIComponent(authId)}&limit=1`
+        `${supabaseConfig.tables.perfis}?select=*&id=eq.${encodeURIComponent(authId)}&limit=1`
     ).catch(() => []);
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+        rows = await supabaseRequest(
+            `${supabaseConfig.tables.perfis}?select=*&auth_user_id=eq.${encodeURIComponent(authId)}&limit=1`
+        ).catch(() => []);
+    }
 
     if (!Array.isArray(rows) || rows.length === 0) {
         rows = await supabaseRequest(
@@ -239,6 +245,7 @@ async function garantirPerfilPorAuth(authUser, nomeHint) {
         method: 'POST',
         headers: { Prefer: 'return=representation' },
         body: {
+            id: authId,
             auth_user_id: authId,
             nome: nomeBase,
             email,
