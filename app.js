@@ -559,7 +559,27 @@ async function sincronizarBipagemSupabase(nota, tipo, dataHora, dataHoraManual) 
 
 async function sincronizarSolicitacaoSupabase(solicitacao) {
     try {
+        const payloadAtual = {
+            nome: String(solicitacao.nome || ''),
+            email: String(solicitacao.email || '').toLowerCase(),
+            role_solicitado: String(solicitacao.papel || 'faturista'),
+            status: String(solicitacao.status || 'pendente'),
+        };
+
+        // Fluxo principal: schema atual (sem coluna senha).
+        const insertedAtual = await supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=id,email`, {
+            method: 'POST',
+            headers: { Prefer: 'return=representation' },
+            body: payloadAtual,
+        }).catch(() => null);
+
+        if (Array.isArray(insertedAtual) && insertedAtual[0] && insertedAtual[0].id) {
+            solicitacao.id = insertedAtual[0].id;
+            return true;
+        }
+
         try {
+            // Fallback legado: RPC antiga pode existir em alguns bancos.
             const rpcResult = await supabaseRpc('criar_solicitacao_acesso_app', {
                 p_nome: String(solicitacao.nome || ''),
                 p_email: String(solicitacao.email || '').toLowerCase(),
@@ -572,7 +592,7 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
             }
             return true;
         } catch (rpcError) {
-            // Fallback para inserção REST direta se RPC não existir.
+            // Fallback para inserção REST legada (com coluna senha), se existir.
         }
 
         const inserted = await supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=id,email`, {
