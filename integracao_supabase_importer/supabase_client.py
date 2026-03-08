@@ -53,11 +53,30 @@ class SupabaseClient:
         result = self.request(
             "GET",
             "nfs",
-            params={"select": "id,numero_nf", "numero_nf": f"eq.{numero_nf}", "limit": "1"},
+            params={
+                "select": "id,numero_nf,serie,pedido,cliente,transportadora,artigo,quantidade_itens,metros,peso_bruto,valor_total,data_emissao,status,origem_xml",
+                "numero_nf": f"eq.{numero_nf}",
+                "limit": "1",
+            },
         )
         if isinstance(result, list) and result:
             return result[0]
         return None
+
+    @staticmethod
+    def _choose(incoming: Any, existing: Any, fallback: Any) -> Any:
+        if incoming is None:
+            return existing if existing not in (None, "") else fallback
+        if isinstance(incoming, str):
+            value = incoming.strip()
+            if value and value not in ("-", "Nao informada", "Cliente nao informado"):
+                return value
+            return existing if existing not in (None, "", "-", "Nao informada", "Cliente nao informado") else fallback
+        if isinstance(incoming, (int, float)):
+            if float(incoming) > 0:
+                return incoming
+            return existing if isinstance(existing, (int, float)) and float(existing) > 0 else fallback
+        return incoming
 
     def upsert_nf(self, nf: Dict[str, Any]) -> int:
         numero_nf = str(nf.get("numero_nf", "")).strip()
@@ -65,6 +84,8 @@ class SupabaseClient:
             raise ValueError("numero_nf is required")
 
         existing = self.find_nf_by_numero(numero_nf)
+        origem_tipo = str(nf.get("origem_tipo") or "").lower()
+
         payload = {
             "numero_nf": numero_nf,
             "serie": nf.get("serie") or "1",
@@ -76,12 +97,30 @@ class SupabaseClient:
             "metros": float(nf.get("metros") or 0),
             "peso_bruto": float(nf.get("peso_bruto") or 0),
             "valor_total": float(nf.get("valor_total") or 0),
-            "data_emissao": nf.get("data_emissao"),
+            "data_emissao": nf.get("data_emissao") or None,
             "status": nf.get("status") or "pendente",
             "origem_xml": nf.get("origem_xml"),
         }
 
         if existing:
+            # PDF costuma ter dados parciais; preserva dados já completos vindos de XML/edições.
+            if origem_tipo == "pdf":
+                payload["serie"] = self._choose(payload.get("serie"), existing.get("serie"), "1")
+                payload["pedido"] = self._choose(payload.get("pedido"), existing.get("pedido"), "-")
+                payload["cliente"] = self._choose(payload.get("cliente"), existing.get("cliente"), "Cliente nao informado")
+                payload["transportadora"] = self._choose(payload.get("transportadora"), existing.get("transportadora"), "Nao informada")
+                payload["artigo"] = self._choose(payload.get("artigo"), existing.get("artigo"), "-")
+                payload["quantidade_itens"] = float(self._choose(payload.get("quantidade_itens"), existing.get("quantidade_itens"), 0.0))
+                payload["metros"] = float(self._choose(payload.get("metros"), existing.get("metros"), 0.0))
+                payload["peso_bruto"] = float(self._choose(payload.get("peso_bruto"), existing.get("peso_bruto"), 0.0))
+                payload["valor_total"] = float(self._choose(payload.get("valor_total"), existing.get("valor_total"), 0.0))
+                payload["data_emissao"] = self._choose(payload.get("data_emissao"), existing.get("data_emissao"), None)
+
+            # Nunca retrocede status operacional (faturada/expedida) durante reimport.
+            existing_status = str(existing.get("status") or "").lower()
+            if existing_status in ("faturada", "expedida"):
+                payload["status"] = existing.get("status")
+
             self.request(
                 "PATCH",
                 "nfs",

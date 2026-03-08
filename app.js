@@ -570,7 +570,7 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
             if (rpcResult && rpcResult.id) {
                 solicitacao.id = rpcResult.id;
             }
-            return;
+            return true;
         } catch (rpcError) {
             // Fallback para inserção REST direta se RPC não existir.
         }
@@ -590,8 +590,10 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
         if (Array.isArray(inserted) && inserted[0] && inserted[0].id) {
             solicitacao.id = inserted[0].id;
         }
+        return true;
     } catch (error) {
         console.warn('[Supabase] Falha ao salvar solicitação:', error?.message || error);
+        return false;
     }
 }
 
@@ -1153,6 +1155,7 @@ async function criarSolicitacao(nome, email, senha, papel) {
     };
 
     let signupResult = null;
+    let sessaoTemporariaAtiva = false;
     try {
         signupResult = await supabaseAuthSignUp(emailNormalizado, senha, nome.trim());
     } catch (error) {
@@ -1167,16 +1170,35 @@ async function criarSolicitacao(nome, email, senha, papel) {
     if (signupResult && signupResult.user && signupResult.access_token) {
         try {
             setAuthSession(signupResult);
+            sessaoTemporariaAtiva = true;
             await definirPerfilPendenteDoSolicitante(signupResult.user, nome.trim(), emailNormalizado, papel);
         } catch (error) {
             console.warn('[Supabase] Falha ao registrar perfil pendente na solicitação:', error?.message || error);
-        } finally {
-            await supabaseAuthSignOut();
+        }
+    } else {
+        try {
+            await supabaseAuthSignIn(emailNormalizado, senha);
+            sessaoTemporariaAtiva = true;
+            if (appState.auth.user) {
+                await definirPerfilPendenteDoSolicitante(appState.auth.user, nome.trim(), emailNormalizado, papel);
+            }
+        } catch (error) {
+            // Pode falhar se confirmação de email estiver obrigatória.
+            console.warn('[Supabase] Não foi possível abrir sessão temporária para solicitação:', error?.message || error);
         }
     }
 
+    const solicitacaoSalva = await sincronizarSolicitacaoSupabase(novaSolicitacao);
+    if (sessaoTemporariaAtiva) {
+        await supabaseAuthSignOut();
+    }
+
+    if (!solicitacaoSalva) {
+        alert('❌ Não foi possível gravar a solicitação no banco. Verifique a policy de insert em solicitacoes_acesso.');
+        return;
+    }
+
     appState.solicitacoes.push(novaSolicitacao);
-    void sincronizarSolicitacaoSupabase(novaSolicitacao);
     alert('✅ Solicitação enviada com sucesso!');
     irParaPagina('login');
 }

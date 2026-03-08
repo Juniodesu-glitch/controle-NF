@@ -53,13 +53,39 @@ def _find_all(root: ET.Element, tag_name: str) -> List[ET.Element]:
     return result
 
 
+def _find_child_text(parent: ET.Element, child_name: str) -> str:
+    if parent is None:
+        return ""
+    for child in list(parent):
+        if _local_name(child.tag) == child_name:
+            return (child.text or "").strip()
+    return ""
+
+
+def _find_first_element(root: ET.Element, tag_name: str) -> ET.Element | None:
+    for elem in root.iter():
+        if _local_name(elem.tag) == tag_name:
+            return elem
+    return None
+
+
 def parse_xml_nf(file_path: str) -> Dict[str, Any]:
     tree = ET.parse(file_path)
     root = tree.getroot()
 
     numero_nf = _normalize_nf_number(_find_first_text(root, "nNF"))
     chave_acesso = _strip_non_digits(_find_first_text(root, "chNFe"))
-    cliente = _find_first_text(root, "xNome") or "Cliente nao informado"
+
+    # Fallbacks para casos de XML incompleto/fora do padrao de tag nNF.
+    if (not numero_nf or numero_nf == "0") and len(chave_acesso) == 44:
+        numero_nf = _normalize_nf_number(chave_acesso[25:34])
+    if not numero_nf or numero_nf == "0":
+        nome_arquivo = os.path.basename(file_path)
+        m = re.search(r"(\d{6,10})", nome_arquivo)
+        if m:
+            numero_nf = _normalize_nf_number(m.group(1))
+    dest = _find_first_element(root, "dest")
+    cliente = _find_child_text(dest, "xNome") or "Cliente nao informado"
 
     # Transportadora: procura xNome dentro de transporta; fallback para qualquer xNome posterior
     transportadora = ""
@@ -156,6 +182,7 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
         "data_emissao": data_emissao,
         "status": "pendente",
         "origem_xml": file_path,
+        "origem_tipo": "xml",
         "itens": itens,
     }
 
@@ -202,6 +229,7 @@ def parse_pdf_nf(file_path: str) -> Dict[str, Any]:
         "data_emissao": None,
         "status": "pendente",
         "origem_xml": file_path,
+        "origem_tipo": "pdf",
         "itens": [],
     }
 
