@@ -10,7 +10,17 @@ const appState = {
     bipagensFaturamento: [],
     bipagensExpedicao: [],
     solicitacoes: [],
-    usuarios: []
+    usuarios: [],
+    xmlApiBaseUrls: ['http://127.0.0.1:8787', 'http://localhost:8787'],
+    xmlServiceStatus: {
+        indisponivel: false,
+        ultimoAviso: 0,
+        avisoConsoleEmitido: false,
+    },
+    scanTimers: {
+        faturamento: null,
+        expedicao: null,
+    }
 };
 
 // Dados simulados para demonstração
@@ -23,13 +33,13 @@ const dadosSimulados = {
         { id: 5, numero: 'NF-005', serie: '1', cliente: 'Empresa E', valor: '1750.00', status: 'faturada', dataEmissao: '2024-03-05' },
     ],
     usuarios: [
-        { id: 1, nome: 'Admin User', email: 'admin@tms.com', papel: 'admin', status: 'ativo' },
-        { id: 2, nome: 'João Faturista', email: 'joao@tms.com', papel: 'faturista', status: 'ativo' },
-        { id: 3, nome: 'Maria Conferente', email: 'maria@tms.com', papel: 'conferente', status: 'ativo' },
+        { id: 1, nome: 'Admin User', email: 'junio.gomes@capricornio.com.br', senha: 'admin123', papel: 'admin', status: 'ativo' },
+        { id: 2, nome: 'João Faturista', email: 'joao@tms.com', senha: 'joao123', papel: 'faturista', status: 'ativo' },
+        { id: 3, nome: 'Maria Conferente', email: 'maria@tms.com', senha: 'maria123', papel: 'conferente', status: 'ativo' },
     ],
     solicitacoes: [
-        { id: 1, nome: 'Pedro Silva', email: 'pedro@email.com', papel: 'faturista', status: 'pendente' },
-        { id: 2, nome: 'Ana Santos', email: 'ana@email.com', papel: 'conferente', status: 'pendente' },
+        { id: 1, nome: 'Pedro Silva', email: 'pedro@email.com', senha: 'pedro123', papel: 'faturista', status: 'pendente' },
+        { id: 2, nome: 'Ana Santos', email: 'ana@email.com', senha: 'ana123', papel: 'conferente', status: 'pendente' },
     ]
 };
 
@@ -52,14 +62,31 @@ function irParaPagina(pagina, usuario = null) {
     renderizar();
 }
 
-function fazerLogin(papel) {
-    const usuario = {
-        id: Math.random(),
-        nome: papel === 'admin' ? 'Admin User' : papel === 'faturista' ? 'João Faturista' : 'Maria Conferente',
-        papel: papel,
-        email: `${papel}@tms.com`
-    };
+function fazerLogin(login, senha) {
+    const loginNormalizado = login.trim().toLowerCase();
+
+    const usuario = appState.usuarios.find(u => {
+        const nomeMatch = u.nome.toLowerCase() === loginNormalizado;
+        const emailMatch = u.email.toLowerCase() === loginNormalizado;
+        return (nomeMatch || emailMatch) && u.senha === senha && u.status === 'ativo';
+    });
+
+    if (!usuario) {
+        const solicitacaoPendente = appState.solicitacoes.find(s =>
+            s.status === 'pendente' && (s.email.toLowerCase() === loginNormalizado || s.nome.toLowerCase() === loginNormalizado)
+        );
+
+        if (solicitacaoPendente) {
+            alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
+            return false;
+        }
+
+        alert('❌ Nome/email ou senha inválidos.');
+        return false;
+    }
+
     irParaPagina('dashboard', usuario);
+    return true;
 }
 
 function fazerLogout() {
@@ -68,23 +95,250 @@ function fazerLogout() {
     renderizar();
 }
 
+function abrirConfiguracao() {
+    if (!appState.currentUser) {
+        alert('❌ Faça login para acessar as configurações.');
+        return;
+    }
+    appState.currentPage = 'configuracao';
+    renderizar();
+}
+
+function alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha) {
+    const usuarioAtual = appState.currentUser;
+
+    if (!usuarioAtual) {
+        alert('❌ Usuário não autenticado.');
+        return false;
+    }
+
+    if (usuarioAtual.senha !== senhaAtual) {
+        alert('❌ A senha atual informada está incorreta.');
+        return false;
+    }
+
+    if (novaSenha.length < 4) {
+        alert('❌ A nova senha deve ter pelo menos 4 caracteres.');
+        return false;
+    }
+
+    if (novaSenha !== confirmarSenha) {
+        alert('❌ A confirmação da nova senha não confere.');
+        return false;
+    }
+
+    const usuarioLista = appState.usuarios.find(u => u.id === usuarioAtual.id);
+    if (!usuarioLista) {
+        alert('❌ Usuário não encontrado.');
+        return false;
+    }
+
+    usuarioLista.senha = novaSenha;
+    appState.currentUser.senha = novaSenha;
+    alert('✅ Senha alterada com sucesso!');
+    return true;
+}
+
 // ========================================
 // FUNÇÕES DE BIPAGEM
 // ========================================
 
+function normalizarEntradaCodigo(valor) {
+    return String(valor || '').trim().replace(/\s+/g, '');
+}
+
+function extrairNumeroNF(codigoLido) {
+    const valor = normalizarEntradaCodigo(codigoLido);
+    if (!valor) return '';
+
+    // Se vier com aspas, usa exatamente o trecho entre aspas.
+    const entreAspas = valor.match(/"(\d{3,10})"/);
+    if (entreAspas) return entreAspas[1];
+
+    // Se vier somente dígitos em leitura bruta da chave NFe (44 dígitos),
+    // usa o bloco nNF (posições 26 a 34) e remove zeros à esquerda.
+    const somenteDigitos = valor.replace(/\D/g, '');
+    if (somenteDigitos.length === 44) {
+        const blocoNNF = somenteDigitos.slice(25, 34);
+        const numeroSemZeros = blocoNNF.replace(/^0+/, '');
+        return numeroSemZeros || '0';
+    }
+
+    // Se a leitura vier com lixo antes/depois, tenta achar uma chave de 44 dígitos.
+    const chave44 = somenteDigitos.match(/\d{44}/);
+    if (chave44) {
+        const blocoNNF = chave44[0].slice(25, 34);
+        const numeroSemZeros = blocoNNF.replace(/^0+/, '');
+        return numeroSemZeros || '0';
+    }
+
+    // Entrada manual curta ou texto com prefixo (ex: NF-001).
+    if (/^\d{3,10}$/.test(somenteDigitos)) return somenteDigitos;
+    const trechoNumerico = valor.match(/(\d{3,10})(?!.*\d)/);
+    return trechoNumerico ? trechoNumerico[1] : valor;
+}
+
+function criarNotaAPartirDaLeitura(numeroNFExtraido) {
+    const hoje = new Date().toISOString().slice(0, 10);
+    const novaNota = {
+        id: Math.floor(Math.random() * 1_000_000_000),
+        numero: numeroNFExtraido,
+        serie: '1',
+        cliente: 'Cliente não informado',
+        transportadora: 'Não informada',
+        artigo: '-',
+        pedido: '-',
+        quantidadeItens: 0,
+        metros: 0,
+        pesoBruto: 0,
+        valor: '0.00',
+        status: 'pendente',
+        dataEmissao: hoje,
+    };
+    appState.notasFiscais.push(novaNota);
+    return novaNota;
+}
+
+function aplicarDadosXMLNaNota(nota, dadosXML) {
+    if (!nota || !dadosXML) return;
+
+    nota.cliente = dadosXML.cliente || nota.cliente || 'Cliente não informado';
+    nota.transportadora = dadosXML.transportadora || nota.transportadora || 'Não informada';
+    nota.artigo = dadosXML.artigo || nota.artigo || '-';
+    nota.pedido = dadosXML.pedido || nota.pedido || '-';
+    nota.quantidadeItens = Number(dadosXML.quantidadeItens ?? nota.quantidadeItens ?? 0);
+    nota.metros = Number(dadosXML.metros ?? nota.metros ?? 0);
+    nota.pesoBruto = Number(dadosXML.pesoBruto ?? nota.pesoBruto ?? 0);
+
+    if (dadosXML.valorTotal !== undefined && dadosXML.valorTotal !== null && dadosXML.valorTotal !== '') {
+        const valorNum = Number(dadosXML.valorTotal);
+        if (!Number.isNaN(valorNum)) {
+            nota.valor = valorNum.toFixed(2);
+        }
+    }
+
+    if (dadosXML.dataEmissao) {
+        nota.dataEmissao = dadosXML.dataEmissao;
+    }
+}
+
+async function buscarDadosNFNoXML(numeroNF) {
+    const endpoints = Array.isArray(appState.xmlApiBaseUrls) && appState.xmlApiBaseUrls.length > 0
+        ? appState.xmlApiBaseUrls
+        : ['http://127.0.0.1:8787'];
+
+    for (const baseUrl of endpoints) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1800);
+
+        try {
+            const response = await fetch(`${baseUrl}/api/nf/${encodeURIComponent(numeroNF)}`, {
+                method: 'GET',
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (response.status === 404) {
+                appState.xmlServiceStatus.indisponivel = false;
+                return null;
+            }
+
+            if (!response.ok) {
+                continue;
+            }
+
+            const payload = await response.json();
+            appState.xmlServiceStatus.indisponivel = false;
+            return payload;
+        } catch (error) {
+            clearTimeout(timeoutId);
+            continue;
+        }
+    }
+
+    appState.xmlServiceStatus.indisponivel = true;
+    const agora = Date.now();
+    if (!appState.xmlServiceStatus.avisoConsoleEmitido || (agora - appState.xmlServiceStatus.ultimoAviso > 120000)) {
+        appState.xmlServiceStatus.ultimoAviso = agora;
+        appState.xmlServiceStatus.avisoConsoleEmitido = true;
+        console.warn('[XML] Serviço indisponível. Bipagem segue sem enriquecimento automático.');
+    }
+
+    return null;
+}
+
+function buscarNotaPorCodigo(codigoLido) {
+    const numeroExtraido = extrairNumeroNF(codigoLido);
+    if (!numeroExtraido) return null;
+
+    const nota = appState.notasFiscais.find(nf => {
+        const numeroBancoExtraido = extrairNumeroNF(nf.numero);
+        const numeroBancoNormalizado = normalizarEntradaCodigo(nf.numero);
+        return numeroBancoExtraido === numeroExtraido || numeroBancoNormalizado === numeroExtraido;
+    });
+
+    if (!nota) return null;
+    return { nota, numeroExtraido };
+}
+
+function agendarBipagemAutomatica(tipo) {
+    const inputId = tipo === 'faturamento' ? 'codigoBarras' : 'codigoBarrasExp';
+    const input = document.getElementById(inputId);
+    if (!input) return;
+
+    const codigo = normalizarEntradaCodigo(input.value);
+    if (codigo.length < 20) return;
+
+    if (appState.scanTimers[tipo]) {
+        clearTimeout(appState.scanTimers[tipo]);
+    }
+
+    // Leitor normalmente envia a leitura toda de uma vez; aguardamos um curto intervalo e bipamos.
+    appState.scanTimers[tipo] = setTimeout(() => {
+        if (tipo === 'faturamento') {
+            handleBiparFaturamento();
+        } else {
+            handleBiparExpedicao();
+        }
+    }, 120);
+}
+
 function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
-    const nota = appState.notasFiscais.find(nf => nf.numero === numeroNF);
+    const resultadoBusca = buscarNotaPorCodigo(numeroNF);
+    let nota = resultadoBusca ? resultadoBusca.nota : null;
+    const numeroNFExtraido = resultadoBusca ? resultadoBusca.numeroExtraido : extrairNumeroNF(numeroNF);
+
+    if (!nota && tipo === 'faturamento' && numeroNFExtraido) {
+        // No faturamento, se a NF ainda não existe no cadastro, cria automaticamente
+        // para manter o mesmo número disponível no admin e na expedição.
+        nota = criarNotaAPartirDaLeitura(numeroNFExtraido);
+    }
     
     if (!nota) {
-        alert('❌ Nota fiscal não encontrada!');
+        alert('❌ Nota fiscal não encontrada! Faça o faturamento antes da expedição.');
+        return false;
+    }
+
+    const listaBipagens = tipo === 'faturamento' ? appState.bipagensFaturamento : appState.bipagensExpedicao;
+    const ultimaBipagem = listaBipagens.length > 0 ? listaBipagens[listaBipagens.length - 1] : null;
+
+    if (ultimaBipagem && ultimaBipagem.numeroNF === numeroNFExtraido) {
+        alert('❌ NF já foi bipada na leitura anterior. Bipagem duplicada consecutiva não permitida.');
         return false;
     }
 
     const bipagem = {
         id: Math.random(),
         notaFiscalId: nota.id,
-        numeroNF: numeroNF,
+        numeroNF: numeroNFExtraido,
         cliente: nota.cliente,
+        transportadora: nota.transportadora || 'Não informada',
+        artigo: nota.artigo || '-',
+        pedido: nota.pedido || '-',
+        quantidadeItens: Number(nota.quantidadeItens || 0),
+        metros: Number(nota.metros || 0),
+        pesoBruto: Number(nota.pesoBruto || 0),
         valor: nota.valor,
         dataHora: dataHora,
         dataHoraManual: dataHoraManual,
@@ -116,6 +370,7 @@ function aprovarSolicitacao(id) {
             id: Math.random(),
             nome: solicitacao.nome,
             email: solicitacao.email,
+            senha: solicitacao.senha,
             papel: solicitacao.papel,
             status: 'ativo'
         });
@@ -133,11 +388,33 @@ function rejeitarSolicitacao(id) {
     }
 }
 
-function criarSolicitacao(nome, email, papel) {
+function criarSolicitacao(nome, email, senha, papel) {
+    const emailNormalizado = email.trim().toLowerCase();
+    const nomeNormalizado = nome.trim().toLowerCase();
+
+    const usuarioExistente = appState.usuarios.find(u =>
+        u.email.toLowerCase() === emailNormalizado || u.nome.toLowerCase() === nomeNormalizado
+    );
+
+    if (usuarioExistente) {
+        alert('❌ Já existe usuário com este nome ou email.');
+        return;
+    }
+
+    const solicitacaoExistente = appState.solicitacoes.find(s =>
+        s.status === 'pendente' && (s.email.toLowerCase() === emailNormalizado || s.nome.toLowerCase() === nomeNormalizado)
+    );
+
+    if (solicitacaoExistente) {
+        alert('⏳ Já existe uma solicitação pendente para este nome ou email.');
+        return;
+    }
+
     appState.solicitacoes.push({
         id: Math.random(),
-        nome: nome,
-        email: email,
+        nome: nome.trim(),
+        email: emailNormalizado,
+        senha: senha,
         papel: papel,
         status: 'pendente'
     });
@@ -178,6 +455,32 @@ function exportarPlanilha(tipo) {
     link.click();
 
     alert('✅ Planilha exportada com sucesso!');
+}
+
+function gerarRelatorioExpedicaoExcel() {
+    if (appState.bipagensExpedicao.length === 0) {
+        alert('❌ Nenhuma expedição registrada para gerar relatório!');
+        return;
+    }
+
+    const dataHoraGeracao = new Date().toLocaleString('pt-BR');
+    const cabecalho = ['NF Numero', 'Data Hora Geracao'];
+    const linhas = [cabecalho];
+
+    appState.bipagensExpedicao.forEach((bipagem) => {
+        linhas.push([String(bipagem.numeroNF), dataHoraGeracao]);
+    });
+
+    const escapar = (valor) => `"${String(valor ?? '').replace(/"/g, '""')}"`;
+    const csv = '\uFEFF' + linhas.map((linha) => linha.map(escapar).join(';')).join('\r\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `relatorio_expedicao_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+
+    alert('✅ Download do relatório Excel iniciado!');
 }
 
 // ========================================
@@ -239,10 +542,35 @@ function gerarRelatorioExpedicaoPDF() {
         return;
     }
 
+    const transportadora = prompt('Informe o nome da transportadora:');
+    if (transportadora === null) {
+        return;
+    }
+
+    const transportadoraFinal = transportadora.trim();
+    if (!transportadoraFinal) {
+        alert('❌ O nome da transportadora é obrigatório para gerar o PDF.');
+        return;
+    }
+
     const dataAtual = new Date().toLocaleDateString('pt-BR');
     const horaAtual = new Date().toLocaleTimeString('pt-BR');
     const totalNotas = appState.bipagensExpedicao.length;
-    const valorTotal = appState.bipagensExpedicao.reduce((total, b) => total + parseFloat(b.valor), 0);
+    const totalPcs = appState.bipagensExpedicao.reduce((acc, item) => acc + Number(item.quantidadeItens || 0), 0);
+    const totalPesoBruto = appState.bipagensExpedicao.reduce((acc, item) => acc + Number(item.pesoBruto || 0), 0);
+    const totalMetros = appState.bipagensExpedicao.reduce((acc, item) => acc + Number(item.metros || 0), 0);
+
+    const formatNumero = (valor) => Number(valor || 0).toLocaleString('pt-BR', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 3,
+    });
+
+    const escapeHtml = (valor) => String(valor ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 
     let conteudoHTML = `
         <html>
@@ -250,137 +578,126 @@ function gerarRelatorioExpedicaoPDF() {
             <meta charset="UTF-8">
             <style>
                 body { 
-                    font-family: 'Courier New', monospace; 
-                    margin: 30px; 
+                    font-family: Arial, sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    color: #000;
+                }
+                .sheet {
+                    width: 100%;
+                    border-collapse: collapse;
+                    table-layout: fixed;
+                }
+                .sheet td, .sheet th {
+                    border: 1px solid #000;
+                    padding: 4px 6px;
                     font-size: 12px;
+                    vertical-align: middle;
                 }
-                .header {
-                    text-align: center;
-                    margin-bottom: 20px;
-                    border: 2px solid #000;
-                    padding: 15px;
-                }
-                .header h1 { margin: 5px 0; font-size: 18px; }
-                .header p { margin: 3px 0; font-weight: bold; }
-                .info-row {
-                    display: flex;
-                    justify-content: space-between;
-                    margin: 10px 0;
-                    font-weight: bold;
-                    font-size: 11px;
-                }
-                table { 
-                    width: 100%; 
-                    border-collapse: collapse; 
-                    margin: 15px 0;
-                    border: 1px solid #000;
-                }
-                th, td { 
-                    border: 1px solid #000; 
-                    padding: 8px; 
+                .logo {
+                    font-size: 42px;
+                    font-weight: 700;
+                    color: #1f4da8;
                     text-align: left;
-                    font-size: 11px;
                 }
-                th { 
-                    background: #f0f0f0; 
-                    font-weight: bold;
-                }
-                .total-row {
-                    font-weight: bold;
-                    background: #f0f0f0;
-                }
-                .assinatura {
-                    margin-top: 40px;
-                    display: flex;
-                    justify-content: space-between;
-                    gap: 30px;
-                }
-                .assinatura-box {
-                    width: 30%;
+                .titulo {
                     text-align: center;
+                    color: #d60000;
+                    font-weight: 700;
+                    font-size: 30px;
+                    letter-spacing: 1px;
                 }
-                .assinatura-linha {
-                    border-top: 1px solid #000;
-                    margin-top: 40px;
-                    padding-top: 5px;
-                    font-size: 10px;
+                .subtitulo {
+                    text-align: center;
+                    color: #d60000;
+                    font-weight: bold;
+                    font-size: 20px;
+                }
+                .label {
                     font-weight: bold;
                 }
-                .placa {
-                    margin: 20px 0;
-                    font-weight: bold;
-                }
-                .placa input {
-                    border: 1px solid #000;
-                    width: 200px;
-                    height: 30px;
+                .th {
+                    text-align: center;
                     font-size: 16px;
+                    font-weight: 700;
+                }
+                .center {
                     text-align: center;
+                }
+                .nf {
+                    background: #fff45a;
+                    font-weight: 700;
+                    text-align: center;
+                }
+                .total {
+                    font-weight: bold;
                 }
                 @media print {
-                    body { margin: 0; padding: 0; }
-                    .placa input { border: none; }
-                    .placa input:focus { outline: none; }
+                    @page { size: landscape; margin: 8mm; }
                 }
             </style>
         </head>
         <body>
-            <div class="header">
-                <h1>CAPRICÓRNIO TÊXTIL S.A</h1>
-                <p>CONTROLE DE EXPEDIÇÃO</p>
-            </div>
-
-            <div class="info-row">
-                <span>DATA: ${dataAtual}</span>
-                <span>HORA: ${horaAtual}</span>
-            </div>
-
-            <div class="info-row">
-                <span>CONFERENTE: ${appState.currentUser.nome}</span>
-            </div>
-
-            <table>
-                <thead>
+            <table class="sheet">
+                <tr>
+                    <td colspan="3" class="logo">capricornio</td>
+                    <td colspan="5"></td>
+                    <td colspan="2" class="label center">DATA:</td>
+                </tr>
+                <tr>
+                    <td colspan="8"></td>
+                    <td colspan="2" class="label center">${dataAtual} HRS ${horaAtual}</td>
+                </tr>
+                <tr>
+                    <td colspan="10" class="titulo">CONTROLE DE CARREGAMENTO</td>
+                </tr>
+                <tr>
+                    <td colspan="10" class="subtitulo">${escapeHtml(transportadoraFinal).toUpperCase()}</td>
+                </tr>
+                <tr>
+                    <th class="th">ARTIGO</th>
+                    <th class="th">PEDIDO</th>
+                    <th class="th">P BRUTO</th>
+                    <th class="th">METROS</th>
+                    <th class="th">PCS</th>
+                    <th class="th" colspan="3">CLIENTE</th>
+                    <th class="th">NF</th>
+                    <th class="th">RES</th>
+                    <th class="th">TRANSP</th>
+                </tr>
+                ${appState.bipagensExpedicao.map((bipagem) => `
                     <tr>
-                        <th style="width: 10%">NF</th>
-                        <th style="width: 35%">CLIENTE</th>
-                        <th style="width: 15%">VALOR</th>
-                        <th style="width: 40%">DATA/HORA EXPEDIÇÃO</th>
+                        <td class="center">${escapeHtml(bipagem.artigo || '-')}</td>
+                        <td class="center">${escapeHtml(bipagem.pedido || '-')}</td>
+                        <td class="center">${escapeHtml(formatNumero(bipagem.pesoBruto || 0))}</td>
+                        <td class="center">${escapeHtml(formatNumero(bipagem.metros || 0))}</td>
+                        <td class="center">${escapeHtml(formatNumero(bipagem.quantidadeItens || 0))}</td>
+                        <td colspan="3">${escapeHtml(bipagem.cliente || '-')}</td>
+                        <td class="nf">${escapeHtml(bipagem.numeroNF)}</td>
+                        <td class="center">${escapeHtml(bipagem.pedido || '-')}</td>
+                        <td class="center">${escapeHtml(bipagem.transportadora || transportadoraFinal)}</td>
                     </tr>
-                </thead>
-                <tbody>
-                    ${appState.bipagensExpedicao.map((bipagem, index) => `
-                        <tr>
-                            <td>${bipagem.numeroNF}</td>
-                            <td>${bipagem.cliente}</td>
-                            <td>R$ ${bipagem.valor}</td>
-                            <td>${bipagem.criadoEm}</td>
-                        </tr>
-                    `).join('')}
-                    <tr class="total-row">
-                        <td colspan="2">TOTAL: ${totalNotas} notas</td>
-                        <td colspan="2">R$ ${valorTotal.toFixed(2)}</td>
-                    </tr>
-                </tbody>
+                `).join('')}
+                <tr class="total">
+                    <td colspan="4" class="center">TOTAL</td>
+                    <td class="center">${escapeHtml(formatNumero(totalPcs))}</td>
+                    <td colspan="2"></td>
+                    <td class="center">${escapeHtml(String(totalNotas))}</td>
+                    <td class="center">${escapeHtml(formatNumero(totalPesoBruto))}</td>
+                    <td class="center">${escapeHtml(transportadoraFinal)}</td>
+                </tr>
+                <tr>
+                    <td colspan="4" class="label">PLACA ____________________________</td>
+                    <td colspan="6" class="label">CONFERENTE ${escapeHtml(appState.currentUser.nome || '')}</td>
+                </tr>
+                <tr>
+                    <td colspan="5" class="label">ASSINATURA DO CONFERENTE ______________________________</td>
+                    <td colspan="5" class="label">DOC RG ____________________</td>
+                </tr>
+                <tr>
+                    <td colspan="10" class="label">ASSINATURA DO MOTORISTA ______________________________</td>
+                </tr>
             </table>
-
-            <div class="placa">
-                PLACA: <input type="text" placeholder="________________">
-            </div>
-
-            <div class="assinatura">
-                <div class="assinatura-box">
-                    <div class="assinatura-linha">Conferente</div>
-                    <div style="font-size: 10px; margin-top: 5px;">${appState.currentUser.nome}</div>
-                </div>
-                <div class="assinatura-box">
-                    <div class="assinatura-linha">Motorista</div>
-                </div>
-                <div class="assinatura-box">
-                    <div class="assinatura-linha">Data</div>
-                    <div style="font-size: 10px; margin-top: 5px;">${dataAtual}</div>
-                </div>
-            </div>
         </body>
         </html>
     `;
@@ -474,10 +791,23 @@ function renderizarLogin() {
 
                 <div class="login-divider"></div>
 
-                <div class="login-buttons">
-                    <button class="btn btn-primary" onclick="mostrarOpcoesLogin()">
-                        🔐 Fazer Login
+                <form onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label class="form-label">Nome ou Email</label>
+                        <input type="text" class="form-input" id="loginUsuario" placeholder="Digite seu nome ou email" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Senha</label>
+                        <input type="password" class="form-input" id="loginSenha" placeholder="Digite sua senha" required>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">
+                        🔐 Entrar
                     </button>
+                </form>
+
+                <div class="login-buttons" style="margin-top: 12px;">
                     <button class="btn btn-secondary" onclick="irParaPagina('solicitar-acesso')">
                         📝 Solicitar Acesso
                     </button>
@@ -491,28 +821,17 @@ function renderizarLogin() {
     `;
 }
 
-function mostrarOpcoesLogin() {
-    const opcoes = `
-Escolha seu tipo de acesso:
+function handleLogin(event) {
+    event.preventDefault();
+    const login = document.getElementById('loginUsuario').value;
+    const senha = document.getElementById('loginSenha').value;
 
-1. Admin - Controle total do sistema
-2. Faturista - Bipagem de notas fiscais
-3. Conferente - Expedição de notas fiscais
-
-Digite o número (1, 2 ou 3):
-    `;
-    
-    const escolha = prompt(opcoes);
-    
-    if (escolha === '1') {
-        fazerLogin('admin');
-    } else if (escolha === '2') {
-        fazerLogin('faturista');
-    } else if (escolha === '3') {
-        fazerLogin('conferente');
-    } else if (escolha !== null) {
-        alert('Opção inválida!');
+    if (!login || !senha) {
+        alert('❌ Informe nome/email e senha.');
+        return;
     }
+
+    fazerLogin(login, senha);
 }
 
 // ========================================
@@ -544,9 +863,15 @@ function renderizarSolicitarAcesso() {
                     </div>
 
                     <div class="form-group">
+                        <label class="form-label">Senha</label>
+                        <input type="password" class="form-input" id="senha" placeholder="Crie uma senha" minlength="4" required>
+                    </div>
+
+                    <div class="form-group">
                         <label class="form-label">Tipo de Acesso</label>
                         <select class="form-select" id="papel" required>
                             <option value="">Selecione uma opção</option>
+                            <option value="admin">Admin</option>
                             <option value="faturista">Faturista</option>
                             <option value="conferente">Conferente de Expedição</option>
                         </select>
@@ -565,9 +890,71 @@ function handleSolicitarAcesso(event) {
     event.preventDefault();
     const nome = document.getElementById('nome').value;
     const email = document.getElementById('email').value;
+    const senha = document.getElementById('senha').value;
     const papel = document.getElementById('papel').value;
-    
-    criarSolicitacao(nome, email, papel);
+
+    if (!nome || !email || !senha || !papel) {
+        alert('❌ Preencha todos os campos.');
+        return;
+    }
+
+    criarSolicitacao(nome, email, senha, papel);
+}
+
+function handleAlterarSenha(event) {
+    event.preventDefault();
+
+    const senhaAtual = document.getElementById('senhaAtual').value;
+    const novaSenha = document.getElementById('novaSenha').value;
+    const confirmarSenha = document.getElementById('confirmarSenha').value;
+
+    if (!senhaAtual || !novaSenha || !confirmarSenha) {
+        alert('❌ Preencha todos os campos.');
+        return;
+    }
+
+    const alterou = alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha);
+    if (alterou) {
+        irParaPagina('dashboard', appState.currentUser);
+    }
+}
+
+function renderizarConfiguracao() {
+    return `
+        <div class="solicitar-container">
+            <div class="solicitar-card">
+                <button class="back-button" onclick="irParaPagina('dashboard', appState.currentUser)">
+                    ← Voltar
+                </button>
+
+                <h2 class="login-title" style="margin-bottom: 8px;">Configuração</h2>
+                <p class="login-subtitle" style="margin-bottom: 24px;">Alterar senha de acesso</p>
+
+                <div class="login-divider"></div>
+
+                <form onsubmit="handleAlterarSenha(event)">
+                    <div class="form-group">
+                        <label class="form-label">Senha Atual</label>
+                        <input type="password" class="form-input" id="senhaAtual" placeholder="Digite sua senha atual" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Nova Senha</label>
+                        <input type="password" class="form-input" id="novaSenha" placeholder="Digite a nova senha" minlength="4" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Confirmar Nova Senha</label>
+                        <input type="password" class="form-input" id="confirmarSenha" placeholder="Confirme a nova senha" minlength="4" required>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">
+                        🔐 Salvar Nova Senha
+                    </button>
+                </form>
+            </div>
+        </div>
+    `;
 }
 
 // ========================================
@@ -599,9 +986,14 @@ function renderizarAdminPanel() {
                         <h1 class="dashboard-title">Painel Administrativo</h1>
                         <p style="color: var(--text-secondary);">Bem-vindo, ${appState.currentUser.nome}</p>
                     </div>
-                    <button class="btn btn-secondary" onclick="fazerLogout()">
-                        🚪 Sair
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="abrirConfiguracao()">
+                            ⚙️ Configuração
+                        </button>
+                        <button class="btn btn-secondary" onclick="fazerLogout()">
+                            🚪 Sair
+                        </button>
+                    </div>
                 </div>
 
                 <div class="tabs">
@@ -651,7 +1043,7 @@ function renderizarSolicitacoes() {
                     <div>
                         <h3 style="color: var(--text-primary); margin-bottom: 4px;">${sol.nome}</h3>
                         <p style="color: var(--text-secondary); font-size: 12px;">${sol.email}</p>
-                        <span class="badge badge-pending">${sol.papel === 'faturista' ? 'Faturista' : 'Conferente'}</span>
+                        <span class="badge badge-pending">${sol.papel === 'admin' ? 'Admin' : sol.papel === 'faturista' ? 'Faturista' : 'Conferente'}</span>
                     </div>
                     <div style="display: flex; gap: 8px;">
                         <button class="btn btn-primary" style="padding: 8px 16px;" onclick="aprovarSolicitacao(${sol.id})">
@@ -744,9 +1136,14 @@ function renderizarFaturista() {
                         <h1 class="dashboard-title">Faturista</h1>
                         <p style="color: var(--text-secondary);">${appState.currentUser.nome}</p>
                     </div>
-                    <button class="btn btn-secondary" onclick="fazerLogout()">
-                        🚪 Sair
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="abrirConfiguracao()">
+                            ⚙️ Configuração
+                        </button>
+                        <button class="btn btn-secondary" onclick="fazerLogout()">
+                            🚪 Sair
+                        </button>
+                    </div>
                 </div>
 
                 <div class="bipagem-container">
@@ -763,6 +1160,8 @@ function renderizarFaturista() {
                                 class="bipagem-input" 
                                 id="codigoBarras" 
                                 placeholder="Escaneie o código de barras ou digite o número da NF"
+                                oninput="agendarBipagemAutomatica('faturamento')"
+                                onkeydown="if(event.key==='Enter'){event.preventDefault();handleBiparFaturamento();}"
                                 autofocus
                             >
                         </div>
@@ -828,17 +1227,28 @@ function toggleDataManual() {
     }
 }
 
-function handleBiparFaturamento() {
+async function handleBiparFaturamento() {
     const codigoBarras = document.getElementById('codigoBarras').value;
+    const numeroExtraido = extrairNumeroNF(codigoBarras);
     const usarDataManual = document.getElementById('usarDataManual').checked;
     const dataHora = usarDataManual ? document.getElementById('dataHora').value : new Date().toLocaleString('pt-BR');
 
-    if (!codigoBarras) {
+    if (!numeroExtraido) {
         alert('Digite o código de barras!');
         return;
     }
 
-    if (biparNota(codigoBarras, dataHora, usarDataManual, 'faturamento')) {
+    const dadosXML = await buscarDadosNFNoXML(numeroExtraido);
+    if (dadosXML && dadosXML.encontrada) {
+        let resultado = buscarNotaPorCodigo(numeroExtraido);
+        let nota = resultado ? resultado.nota : null;
+        if (!nota) {
+            nota = criarNotaAPartirDaLeitura(numeroExtraido);
+        }
+        aplicarDadosXMLNaNota(nota, dadosXML);
+    }
+
+    if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
         document.getElementById('codigoBarras').value = '';
         renderizar();
     }
@@ -857,9 +1267,14 @@ function renderizarConferente() {
                         <h1 class="dashboard-title">Conferente de Expedição</h1>
                         <p style="color: var(--text-secondary);">${appState.currentUser.nome}</p>
                     </div>
-                    <button class="btn btn-secondary" onclick="fazerLogout()">
-                        🚪 Sair
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="abrirConfiguracao()">
+                            ⚙️ Configuração
+                        </button>
+                        <button class="btn btn-secondary" onclick="fazerLogout()">
+                            🚪 Sair
+                        </button>
+                    </div>
                 </div>
 
                 <div class="bipagem-container">
@@ -876,6 +1291,8 @@ function renderizarConferente() {
                                 class="bipagem-input" 
                                 id="codigoBarrasExp" 
                                 placeholder="Escaneie o código de barras ou digite o número da NF"
+                                oninput="agendarBipagemAutomatica('expedicao')"
+                                onkeydown="if(event.key==='Enter'){event.preventDefault();handleBiparExpedicao();}"
                                 autofocus
                             >
                         </div>
@@ -907,8 +1324,8 @@ function renderizarConferente() {
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
                             <h3 style="color: var(--text-primary); margin: 0;">Histórico de Expedições (${appState.bipagensExpedicao.length})</h3>
                             ${appState.bipagensExpedicao.length > 0 ? `
-                                <button class="btn btn-primary" style="padding: 8px 16px;" onclick="abrirModalRelatorioExpedicao()">
-                                    📊 Gerar Relatório
+                                <button class="btn btn-primary" style="padding: 8px 16px;" onclick="gerarRelatorioExpedicaoExcel()">
+                                    📊 Exportar Excel
                                 </button>
                             ` : ''}
                         </div>
@@ -950,15 +1367,16 @@ function toggleDataManualExp() {
 
 function handleBiparExpedicao() {
     const codigoBarras = document.getElementById('codigoBarrasExp').value;
+    const numeroExtraido = extrairNumeroNF(codigoBarras);
     const usarDataManual = document.getElementById('usarDataManualExp').checked;
     const dataHora = usarDataManual ? document.getElementById('dataHoraExp').value : new Date().toLocaleString('pt-BR');
 
-    if (!codigoBarras) {
+    if (!numeroExtraido) {
         alert('Digite o código de barras!');
         return;
     }
 
-    if (biparNota(codigoBarras, dataHora, usarDataManual, 'expedicao')) {
+    if (biparNota(numeroExtraido, dataHora, usarDataManual, 'expedicao')) {
         document.getElementById('codigoBarrasExp').value = '';
         renderizar();
     }
@@ -992,6 +1410,8 @@ function renderizar() {
         html = renderizarLogin();
     } else if (appState.currentPage === 'solicitar-acesso') {
         html = renderizarSolicitarAcesso();
+    } else if (appState.currentPage === 'configuracao') {
+        html = renderizarConfiguracao();
     } else if (appState.currentPage === 'relatorio-expedicao') {
         html = `
             <div class="header">
