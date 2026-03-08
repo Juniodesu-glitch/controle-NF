@@ -332,13 +332,14 @@ function mapPerfilRowToLocal(row) {
 }
 
 function mapSolicitacaoRowToLocal(row) {
+    const statusNormalizado = String(row.status || 'pendente').trim().toLowerCase();
     return {
         id: row.id || Math.floor(Math.random() * 1_000_000_000),
         nome: row.nome || '',
         email: row.email || '',
         senha: row.senha || '',
         papel: row.role_solicitado || row.papel || 'faturista',
-        status: row.status || 'pendente',
+        status: statusNormalizado,
     };
 }
 
@@ -587,8 +588,9 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
                 p_role_solicitado: String(solicitacao.papel || 'faturista'),
             });
 
-            if (rpcResult && rpcResult.id) {
-                solicitacao.id = rpcResult.id;
+            const rpcPayload = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult;
+            if (rpcPayload && rpcPayload.id) {
+                solicitacao.id = rpcPayload.id;
             }
             return true;
         } catch (rpcError) {
@@ -1117,9 +1119,12 @@ function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
 // ========================================
 
 async function aprovarSolicitacao(id) {
-    const solicitacao = appState.solicitacoes.find(s => s.id === id);
+    const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
         solicitacao.status = 'aprovada';
+        appState.solicitacoes = appState.solicitacoes.filter(s => String(s.id) !== String(id));
+        renderizar();
+
         try {
             await atualizarStatusSolicitacaoSupabase(solicitacao);
             await ativarPerfilAprovadoSupabase(solicitacao);
@@ -1134,9 +1139,10 @@ async function aprovarSolicitacao(id) {
 }
 
 function rejeitarSolicitacao(id) {
-    const solicitacao = appState.solicitacoes.find(s => s.id === id);
+    const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
         solicitacao.status = 'rejeitada';
+        appState.solicitacoes = appState.solicitacoes.filter(s => String(s.id) !== String(id));
         void atualizarStatusSolicitacaoSupabase(solicitacao);
         alert('❌ Solicitação rejeitada!');
         renderizar();
@@ -1828,7 +1834,7 @@ function renderizarAdminPanel() {
 }
 
 function renderizarSolicitacoes() {
-    const solicitacoesPendentes = appState.solicitacoes.filter(s => s.status === 'pendente');
+    const solicitacoesPendentes = appState.solicitacoes.filter(s => String(s.status || '').trim().toLowerCase() === 'pendente');
 
     if (solicitacoesPendentes.length === 0) {
         return `
