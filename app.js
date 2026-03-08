@@ -621,22 +621,42 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
 
 async function atualizarStatusSolicitacaoSupabase(solicitacao) {
     try {
+        const statusFinal = String(solicitacao.status || 'pendente').trim().toLowerCase();
+        const emailFinal = String(solicitacao.email || '').toLowerCase().trim();
+
         if (solicitacao.id) {
-            await supabaseRequest(
-                `${supabaseConfig.tables.solicitacoes}?id=eq.${encodeURIComponent(solicitacao.id)}`,
+            const porId = await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?id=eq.${encodeURIComponent(solicitacao.id)}&select=id,status,email`,
                 {
                     method: 'PATCH',
-                    body: { status: String(solicitacao.status || 'pendente') },
+                    headers: { Prefer: 'return=representation' },
+                    body: { status: statusFinal },
                 }
-            );
-            return;
+            ).catch(() => []);
+
+            // Mesmo quando atualiza por id, também atualiza duplicadas pendentes do mesmo email.
+            if (emailFinal) {
+                await supabaseRequest(
+                    `${supabaseConfig.tables.solicitacoes}?email=eq.${encodeURIComponent(emailFinal)}&status=eq.pendente&select=id,status,email`,
+                    {
+                        method: 'PATCH',
+                        headers: { Prefer: 'return=representation' },
+                        body: { status: statusFinal },
+                    }
+                ).catch(() => null);
+            }
+
+            if (Array.isArray(porId) && porId.length > 0) {
+                return;
+            }
         }
 
         await supabaseRequest(
-            `${supabaseConfig.tables.solicitacoes}?email=eq.${encodeURIComponent(String(solicitacao.email || '').toLowerCase())}`,
+            `${supabaseConfig.tables.solicitacoes}?email=eq.${encodeURIComponent(emailFinal)}&status=eq.pendente&select=id,status,email`,
             {
                 method: 'PATCH',
-                body: { status: String(solicitacao.status || 'pendente') },
+                headers: { Prefer: 'return=representation' },
+                body: { status: statusFinal },
             }
         );
     } catch (error) {
@@ -1122,7 +1142,13 @@ async function aprovarSolicitacao(id) {
     const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
         solicitacao.status = 'aprovada';
-        appState.solicitacoes = appState.solicitacoes.filter(s => String(s.id) !== String(id));
+        const emailNormalizado = String(solicitacao.email || '').toLowerCase().trim();
+        appState.solicitacoes = appState.solicitacoes.filter(s => {
+            const mesmoId = String(s.id) === String(id);
+            const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
+                && String(s.status || '').trim().toLowerCase() === 'pendente';
+            return !(mesmoId || mesmoEmailPendente);
+        });
         renderizar();
 
         try {
@@ -1142,7 +1168,13 @@ function rejeitarSolicitacao(id) {
     const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
         solicitacao.status = 'rejeitada';
-        appState.solicitacoes = appState.solicitacoes.filter(s => String(s.id) !== String(id));
+        const emailNormalizado = String(solicitacao.email || '').toLowerCase().trim();
+        appState.solicitacoes = appState.solicitacoes.filter(s => {
+            const mesmoId = String(s.id) === String(id);
+            const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
+                && String(s.status || '').trim().toLowerCase() === 'pendente';
+            return !(mesmoId || mesmoEmailPendente);
+        });
         void atualizarStatusSolicitacaoSupabase(solicitacao);
         alert('❌ Solicitação rejeitada!');
         renderizar();
