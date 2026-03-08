@@ -1156,15 +1156,13 @@ async function criarSolicitacao(nome, email, senha, papel) {
 
     let signupResult = null;
     let sessaoTemporariaAtiva = false;
+    let signupFalhou = false;
     try {
         signupResult = await supabaseAuthSignUp(emailNormalizado, senha, nome.trim());
     } catch (error) {
         const msg = String(error?.message || '').toLowerCase();
         const usuarioJaExiste = msg.includes('already') || msg.includes('exists') || msg.includes('registered');
-        if (!usuarioJaExiste) {
-            alert('❌ Falha ao criar usuário no Supabase Auth. Tente novamente.');
-            return;
-        }
+        signupFalhou = !usuarioJaExiste;
     }
 
     if (signupResult && signupResult.user && signupResult.access_token) {
@@ -1199,7 +1197,11 @@ async function criarSolicitacao(nome, email, senha, papel) {
     }
 
     appState.solicitacoes.push(novaSolicitacao);
-    alert('✅ Solicitação enviada com sucesso!');
+    if (signupFalhou) {
+        alert('✅ Solicitação enviada para aprovação do admin. Observação: o Auth bloqueou criação automática e o admin deve liberar/criar o usuário.');
+    } else {
+        alert('✅ Solicitação enviada com sucesso!');
+    }
     irParaPagina('login');
 }
 
