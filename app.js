@@ -43,12 +43,14 @@ const dadosSimulados = {
     ]
 };
 
+const runtimeConfig = (typeof window !== 'undefined' && window.__APP_CONFIG__) ? window.__APP_CONFIG__ : {};
+
 const supabaseConfig = {
-    url: 'https://ttxobirrlaetnnnpalfk.supabase.co',
-    key: 'sb_publishable_GVL27-8GCdfuBmm83HveYA_eaiRBLgp',
+    url: runtimeConfig.supabaseUrl || 'https://ttxobirrlaetnnnpalfk.supabase.co',
+    key: runtimeConfig.supabaseAnonKey || 'sb_publishable_GVL27-8GCdfuBmm83HveYA_eaiRBLgp',
     tables: {
-        perfis: 'perfis',
-        solicitacoes: 'solicitar_acesso',
+        perfis: 'profiles',
+        solicitacoes: 'solicitacoes_acesso',
         nfs: 'nfs',
         bipagens: 'bipagens',
     },
@@ -59,10 +61,204 @@ appState.supabase = {
     nfIdPorNumero: {},
 };
 
+appState.auth = {
+    accessToken: null,
+    refreshToken: null,
+    user: null,
+};
+
+appState.sync = {
+    timer: null,
+    intervalMs: 12000,
+    emAndamento: false,
+};
+
+async function sincronizarDadosEmSegundoPlano() {
+    if (!appState.currentUser || appState.sync.emAndamento) return;
+
+    appState.sync.emAndamento = true;
+    try {
+        await carregarDadosSupabase();
+
+        // Evita re-render durante a bipagem para não perder foco do leitor.
+        if (appState.currentPage === 'dashboard' && appState.currentUser.papel === 'admin') {
+            renderizar();
+        }
+    } catch (error) {
+        // Silencioso para não poluir UX; erros já são tratados na carga do Supabase.
+    } finally {
+        appState.sync.emAndamento = false;
+    }
+}
+
+function iniciarSincronizacaoAutomatica() {
+    pararSincronizacaoAutomatica();
+    appState.sync.timer = setInterval(() => {
+        void sincronizarDadosEmSegundoPlano();
+    }, appState.sync.intervalMs);
+}
+
+function pararSincronizacaoAutomatica() {
+    if (appState.sync.timer) {
+        clearInterval(appState.sync.timer);
+        appState.sync.timer = null;
+    }
+}
+
+function setAuthSession(session) {
+    appState.auth.accessToken = session && session.access_token ? session.access_token : null;
+    appState.auth.refreshToken = session && session.refresh_token ? session.refresh_token : null;
+    appState.auth.user = session && session.user ? session.user : null;
+}
+
+function clearAuthSession() {
+    appState.auth.accessToken = null;
+    appState.auth.refreshToken = null;
+    appState.auth.user = null;
+}
+
+async function supabaseAuthRequest(path, options = {}) {
+    const method = options.method || 'GET';
+    const headers = {
+        apikey: supabaseConfig.key,
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+    };
+
+    if (options.accessToken) {
+        headers.Authorization = `Bearer ${options.accessToken}`;
+    }
+
+    const response = await fetch(`${supabaseConfig.url}/auth/v1/${path}`, {
+        method,
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+
+    const text = await response.text();
+    let parsed = null;
+    try {
+        parsed = text ? JSON.parse(text) : null;
+    } catch {
+        parsed = null;
+    }
+
+    if (!response.ok) {
+        const msg = parsed && (parsed.msg || parsed.error_description || parsed.error)
+            ? (parsed.msg || parsed.error_description || parsed.error)
+            : text;
+        throw new Error(`Supabase Auth ${method} ${path} -> ${response.status}: ${msg}`);
+    }
+
+    return parsed;
+}
+
+async function supabaseAuthSignIn(email, senha) {
+    const data = await supabaseAuthRequest('token?grant_type=password', {
+        method: 'POST',
+        body: {
+            email,
+            password: senha,
+        },
+    });
+
+    setAuthSession(data);
+    return data;
+}
+
+async function supabaseAuthSignUp(email, senha, nome) {
+    return supabaseAuthRequest('signup', {
+        method: 'POST',
+        body: {
+            email,
+            password: senha,
+            data: {
+                nome: String(nome || ''),
+            },
+        },
+    });
+}
+
+async function supabaseAuthSignOut() {
+    if (!appState.auth.accessToken) {
+        clearAuthSession();
+        return;
+    }
+
+    try {
+        await supabaseAuthRequest('logout', {
+            method: 'POST',
+            accessToken: appState.auth.accessToken,
+        });
+    } catch (error) {
+        // Se falhar logout remoto, limpa sessão local para não travar o fluxo.
+    }
+
+    clearAuthSession();
+}
+
+async function garantirPerfilPorAuth(authUser, nomeHint) {
+    if (!authUser || !authUser.id || !authUser.email) {
+        return null;
+    }
+
+    const authId = String(authUser.id);
+    const email = String(authUser.email).toLowerCase();
+
+    let rows = await supabaseRequest(
+        `${supabaseConfig.tables.perfis}?select=*&auth_user_id=eq.${encodeURIComponent(authId)}&limit=1`
+    ).catch(() => []);
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+        rows = await supabaseRequest(
+            `${supabaseConfig.tables.perfis}?select=*&email=eq.${encodeURIComponent(email)}&limit=1`
+        ).catch(() => []);
+    }
+
+    const nomeBase = String(nomeHint || authUser.user_metadata?.nome || authUser.email.split('@')[0] || 'Usuário');
+
+    if (Array.isArray(rows) && rows.length > 0) {
+        const existente = rows[0];
+        if (!existente.auth_user_id || String(existente.auth_user_id) !== authId || !existente.nome) {
+            await supabaseRequest(`${supabaseConfig.tables.perfis}?id=eq.${encodeURIComponent(existente.id)}`, {
+                method: 'PATCH',
+                body: {
+                    auth_user_id: authId,
+                    nome: existente.nome || nomeBase,
+                    email,
+                },
+            }).catch(() => null);
+            existente.auth_user_id = authId;
+            existente.nome = existente.nome || nomeBase;
+            existente.email = email;
+        }
+        return mapPerfilRowToLocal(existente);
+    }
+
+    const inserted = await supabaseRequest(`${supabaseConfig.tables.perfis}?select=*`, {
+        method: 'POST',
+        headers: { Prefer: 'return=representation' },
+        body: {
+            auth_user_id: authId,
+            nome: nomeBase,
+            email,
+            role: 'conferente',
+            ativo: false,
+        },
+    }).catch(() => []);
+
+    if (Array.isArray(inserted) && inserted.length > 0) {
+        return mapPerfilRowToLocal(inserted[0]);
+    }
+
+    return null;
+}
+
 function getSupabaseHeaders() {
+    const bearer = appState.auth.accessToken || supabaseConfig.key;
     return {
         apikey: supabaseConfig.key,
-        Authorization: `Bearer ${supabaseConfig.key}`,
+        Authorization: `Bearer ${bearer}`,
         'Content-Type': 'application/json',
     };
 }
@@ -95,12 +291,34 @@ async function supabaseRequest(path, options = {}) {
     }
 }
 
+async function supabaseRpc(functionName, args = {}) {
+    const response = await fetch(`${supabaseConfig.url}/rest/v1/rpc/${functionName}`, {
+        method: 'POST',
+        headers: getSupabaseHeaders(),
+        body: JSON.stringify(args),
+    });
+
+    if (!response.ok) {
+        const erroTexto = await response.text();
+        throw new Error(`Supabase RPC ${functionName} -> ${response.status}: ${erroTexto}`);
+    }
+
+    const texto = await response.text();
+    if (!texto) return null;
+
+    try {
+        return JSON.parse(texto);
+    } catch {
+        return texto;
+    }
+}
+
 function mapPerfilRowToLocal(row) {
     return {
         id: row.id || Math.floor(Math.random() * 1_000_000_000),
         nome: row.nome || row.name || '',
         email: row.email || '',
-        senha: row.senha || '1234',
+        senha: row.senha || '',
         papel: row.role || row.papel || 'faturista',
         status: row.ativo === false ? 'inativo' : 'ativo',
     };
@@ -135,8 +353,24 @@ function mapNfRowToLocal(row) {
     };
 }
 
+function normalizarTipoBipagem(tipo) {
+    const valor = String(tipo || '').trim().toLowerCase();
+    if (!valor) return 'faturamento';
+
+    if (valor === 'expedicao' || valor === 'expedição' || valor === 'conferencia' || valor === 'conferente') {
+        return 'expedicao';
+    }
+
+    if (valor === 'faturamento' || valor === 'faturista' || valor === 'despertador' || valor === 'billing') {
+        return 'faturamento';
+    }
+
+    return valor;
+}
+
 function mapBipagemRowToLocal(row, notasPorId) {
     const nota = notasPorId[row.nf_id];
+    const tipoNormalizado = normalizarTipoBipagem(row.tipo);
     return {
         id: row.id || Math.random(),
         notaFiscalId: row.nf_id,
@@ -154,7 +388,7 @@ function mapBipagemRowToLocal(row, notasPorId) {
         criadoEm: row.criado_em
             ? new Date(row.criado_em).toLocaleString('pt-BR')
             : new Date().toLocaleString('pt-BR'),
-        tipo: row.tipo,
+        tipo: tipoNormalizado,
     };
 }
 
@@ -171,13 +405,8 @@ async function carregarDadosSupabase() {
             appState.notasFiscais = nfsRows.map(mapNfRowToLocal);
         }
 
-        if (Array.isArray(perfisRows) && perfisRows.length > 0) {
-            appState.usuarios = perfisRows.map(mapPerfilRowToLocal);
-        }
-
-        if (Array.isArray(solicitacoesRows) && solicitacoesRows.length > 0) {
-            appState.solicitacoes = solicitacoesRows.map(mapSolicitacaoRowToLocal);
-        }
+        appState.usuarios = Array.isArray(perfisRows) ? perfisRows.map(mapPerfilRowToLocal) : [];
+        appState.solicitacoes = Array.isArray(solicitacoesRows) ? solicitacoesRows.map(mapSolicitacaoRowToLocal) : [];
 
         const notasPorId = {};
         appState.supabase.nfIdPorNumero = {};
@@ -279,6 +508,7 @@ async function sincronizarNfSupabase(nota) {
 
 async function sincronizarBipagemSupabase(nota, tipo, dataHora, dataHoraManual) {
     try {
+        const tipoNormalizado = normalizarTipoBipagem(tipo);
         const nfId = await garantirNfNoSupabase(nota);
         if (!nfId) return;
 
@@ -286,11 +516,31 @@ async function sincronizarBipagemSupabase(nota, tipo, dataHora, dataHoraManual) 
         const dataIso = Number.isNaN(dataConvertida.getTime())
             ? new Date().toISOString()
             : dataConvertida.toISOString();
+
+        const numeroDb = numeroToDbValue(nota);
+        const usuarioId = appState.currentUser && appState.currentUser.id
+            ? String(appState.currentUser.id)
+            : null;
+
+        try {
+            await supabaseRpc('registrar_bipagem_app_v2', {
+                p_numero_nf: numeroDb,
+                p_tipo: tipoNormalizado,
+                p_usuario_id: usuarioId,
+                p_carregamento_id: null,
+                p_data_hora: dataIso,
+                p_data_hora_manual: Boolean(dataHoraManual),
+            });
+            return;
+        } catch (rpcError) {
+            // Fallback para INSERT direto se RPC ainda não estiver criada no banco.
+        }
+
         await supabaseRequest(`${supabaseConfig.tables.bipagens}`, {
             method: 'POST',
             body: {
                 nf_id: nfId,
-                tipo,
+                tipo: tipoNormalizado,
                 data_hora: dataIso,
                 data_hora_manual: Boolean(dataHoraManual),
             },
@@ -302,8 +552,25 @@ async function sincronizarBipagemSupabase(nota, tipo, dataHora, dataHoraManual) 
 
 async function sincronizarSolicitacaoSupabase(solicitacao) {
     try {
-        await supabaseRequest(`${supabaseConfig.tables.solicitacoes}`, {
+        try {
+            const rpcResult = await supabaseRpc('criar_solicitacao_acesso_app', {
+                p_nome: String(solicitacao.nome || ''),
+                p_email: String(solicitacao.email || '').toLowerCase(),
+                p_senha: String(solicitacao.senha || ''),
+                p_role_solicitado: String(solicitacao.papel || 'faturista'),
+            });
+
+            if (rpcResult && rpcResult.id) {
+                solicitacao.id = rpcResult.id;
+            }
+            return;
+        } catch (rpcError) {
+            // Fallback para inserção REST direta se RPC não existir.
+        }
+
+        const inserted = await supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=id,email`, {
             method: 'POST',
+            headers: { Prefer: 'return=representation' },
             body: {
                 nome: String(solicitacao.nome || ''),
                 email: String(solicitacao.email || '').toLowerCase(),
@@ -312,6 +579,10 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
                 status: String(solicitacao.status || 'pendente'),
             },
         });
+
+        if (Array.isArray(inserted) && inserted[0] && inserted[0].id) {
+            solicitacao.id = inserted[0].id;
+        }
     } catch (error) {
         console.warn('[Supabase] Falha ao salvar solicitação:', error?.message || error);
     }
@@ -319,6 +590,17 @@ async function sincronizarSolicitacaoSupabase(solicitacao) {
 
 async function atualizarStatusSolicitacaoSupabase(solicitacao) {
     try {
+        if (solicitacao.id) {
+            await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?id=eq.${encodeURIComponent(solicitacao.id)}`,
+                {
+                    method: 'PATCH',
+                    body: { status: String(solicitacao.status || 'pendente') },
+                }
+            );
+            return;
+        }
+
         await supabaseRequest(
             `${supabaseConfig.tables.solicitacoes}?email=eq.${encodeURIComponent(String(solicitacao.email || '').toLowerCase())}`,
             {
@@ -335,10 +617,23 @@ async function sincronizarPerfilSupabase(usuario) {
     try {
         const email = String(usuario.email || '').toLowerCase();
         const nome = String(usuario.nome || '');
+
+        try {
+            await supabaseRpc('upsert_profile_app', {
+                p_nome: nome,
+                p_email: email,
+                p_senha: String(usuario.senha || ''),
+                p_role: String(usuario.papel || 'faturista'),
+                p_ativo: usuario.status !== 'inativo',
+            });
+            return;
+        } catch (rpcError) {
+            // Fallback para update REST em profiles se RPC não existir.
+        }
+
         const payload = {
             nome,
             email,
-            senha: String(usuario.senha || ''),
             role: String(usuario.papel || 'faturista'),
             ativo: usuario.status !== 'inativo',
         };
@@ -355,20 +650,53 @@ async function sincronizarPerfilSupabase(usuario) {
             return;
         }
 
-        await supabaseRequest(`${supabaseConfig.tables.perfis}`, {
-            method: 'POST',
-            body: payload,
-        });
+        // profiles normalmente depende de auth.users (id uuid obrigatório).
+        // Se não existir perfil com esse email, não força insert para não quebrar o fluxo.
+        console.warn('[Supabase] Perfil não encontrado para email; criação deve ser feita via Auth do Supabase:', email);
     } catch (error) {
         console.warn('[Supabase] Falha ao sincronizar perfil:', error?.message || error);
     }
 }
 
+async function definirPerfilPendenteDoSolicitante(authUser, nome, email, papel) {
+    if (!authUser || !authUser.id) return;
+
+    const perfil = await garantirPerfilPorAuth(authUser, nome);
+    if (!perfil) return;
+
+    await supabaseRequest(
+        `${supabaseConfig.tables.perfis}?email=eq.${encodeURIComponent(String(email || '').toLowerCase())}`,
+        {
+            method: 'PATCH',
+            body: {
+                nome: String(nome || ''),
+                role: String(papel || 'faturista'),
+                ativo: false,
+            },
+        }
+    ).catch(() => null);
+}
+
+async function ativarPerfilAprovadoSupabase(solicitacao) {
+    const email = String(solicitacao.email || '').toLowerCase();
+    await supabaseRequest(
+        `${supabaseConfig.tables.perfis}?email=eq.${encodeURIComponent(email)}`,
+        {
+            method: 'PATCH',
+            body: {
+                nome: String(solicitacao.nome || ''),
+                role: String(solicitacao.papel || 'faturista'),
+                ativo: true,
+            },
+        }
+    );
+}
+
 // Inicializar dados
 async function inicializarDados() {
     appState.notasFiscais = [...dadosSimulados.notasFiscais];
-    appState.usuarios = [...dadosSimulados.usuarios];
-    appState.solicitacoes = [...dadosSimulados.solicitacoes];
+    appState.usuarios = [];
+    appState.solicitacoes = [];
     appState.bipagensFaturamento = [];
     appState.bipagensExpedicao = [];
 
@@ -385,18 +713,56 @@ function irParaPagina(pagina, usuario = null) {
     renderizar();
 }
 
-function fazerLogin(login, senha) {
-    const loginNormalizado = login.trim().toLowerCase();
+async function fazerLogin(login, senha) {
+    const loginNormalizado = String(login || '').trim().toLowerCase();
 
-    const usuario = appState.usuarios.find(u => {
-        const nomeMatch = u.nome.toLowerCase() === loginNormalizado;
-        const emailMatch = u.email.toLowerCase() === loginNormalizado;
-        return (nomeMatch || emailMatch) && u.senha === senha && u.status === 'ativo';
-    });
+    let emailParaLogin = loginNormalizado;
+    if (!emailParaLogin.includes('@')) {
+        const usuarioMapeado = appState.usuarios.find((u) => String(u.nome || '').toLowerCase() === loginNormalizado);
+        emailParaLogin = usuarioMapeado ? String(usuarioMapeado.email || '').toLowerCase() : '';
+    }
 
-    if (!usuario) {
-        const solicitacaoPendente = appState.solicitacoes.find(s =>
-            s.status === 'pendente' && (s.email.toLowerCase() === loginNormalizado || s.nome.toLowerCase() === loginNormalizado)
+    if (!emailParaLogin || !emailParaLogin.includes('@')) {
+        alert('❌ Para Supabase Auth, informe um email válido no login.');
+        return false;
+    }
+
+    try {
+        const sessao = await supabaseAuthSignIn(emailParaLogin, senha);
+        await carregarDadosSupabase();
+        const perfil = await garantirPerfilPorAuth(sessao.user, loginNormalizado);
+
+        if (!perfil) {
+            alert('❌ Não foi possível carregar seu perfil no banco.');
+            await supabaseAuthSignOut();
+            return false;
+        }
+
+        if (perfil.status !== 'ativo') {
+            alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
+            await supabaseAuthSignOut();
+            return false;
+        }
+
+        const idx = appState.usuarios.findIndex((u) => String(u.email || '').toLowerCase() === String(perfil.email || '').toLowerCase());
+        if (idx >= 0) {
+            appState.usuarios[idx] = { ...appState.usuarios[idx], ...perfil, senha: '' };
+        } else {
+            appState.usuarios.push({ ...perfil, senha: '' });
+        }
+
+        iniciarSincronizacaoAutomatica();
+        irParaPagina('dashboard', { ...perfil, senha: '' });
+        return true;
+    } catch (error) {
+        const msg = String(error?.message || '');
+        if (msg.toLowerCase().includes('email not confirmed')) {
+            alert('⏳ Email ainda não confirmado no Supabase Auth.');
+            return false;
+        }
+
+        const solicitacaoPendente = appState.solicitacoes.find((s) =>
+            s.status === 'pendente' && (String(s.email || '').toLowerCase() === emailParaLogin || String(s.nome || '').toLowerCase() === loginNormalizado)
         );
 
         if (solicitacaoPendente) {
@@ -404,15 +770,14 @@ function fazerLogin(login, senha) {
             return false;
         }
 
-        alert('❌ Nome/email ou senha inválidos.');
+        alert('❌ Login inválido ou usuário sem cadastro no Auth.');
         return false;
     }
-
-    irParaPagina('dashboard', usuario);
-    return true;
 }
 
-function fazerLogout() {
+async function fazerLogout() {
+    pararSincronizacaoAutomatica();
+    await supabaseAuthSignOut();
     appState.currentUser = null;
     appState.currentPage = 'login';
     renderizar();
@@ -427,16 +792,11 @@ function abrirConfiguracao() {
     renderizar();
 }
 
-function alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha) {
+async function alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha) {
     const usuarioAtual = appState.currentUser;
 
     if (!usuarioAtual) {
         alert('❌ Usuário não autenticado.');
-        return false;
-    }
-
-    if (usuarioAtual.senha !== senhaAtual) {
-        alert('❌ A senha atual informada está incorreta.');
         return false;
     }
 
@@ -450,17 +810,20 @@ function alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha) {
         return false;
     }
 
-    const usuarioLista = appState.usuarios.find(u => u.id === usuarioAtual.id);
-    if (!usuarioLista) {
-        alert('❌ Usuário não encontrado.');
+    try {
+        await supabaseAuthSignIn(String(usuarioAtual.email || '').toLowerCase(), senhaAtual);
+        await supabaseAuthRequest('user', {
+            method: 'PUT',
+            accessToken: appState.auth.accessToken,
+            body: { password: novaSenha },
+        });
+
+        alert('✅ Senha alterada com sucesso!');
+        return true;
+    } catch (error) {
+        alert('❌ Não foi possível alterar a senha. Verifique a senha atual.');
         return false;
     }
-
-    usuarioLista.senha = novaSenha;
-    appState.currentUser.senha = novaSenha;
-    void sincronizarPerfilSupabase(usuarioLista);
-    alert('✅ Senha alterada com sucesso!');
-    return true;
 }
 
 // ========================================
@@ -543,6 +906,39 @@ function aplicarDadosXMLNaNota(nota, dadosXML) {
 
     if (dadosXML.dataEmissao) {
         nota.dataEmissao = dadosXML.dataEmissao;
+    }
+}
+
+async function buscarDadosNFNoSupabase(numeroNF) {
+    try {
+        const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
+        if (!numeroNormalizado) return null;
+
+        const rows = await supabaseRequest(
+            `${supabaseConfig.tables.nfs}?select=*&numero_nf=eq.${encodeURIComponent(numeroNormalizado)}&limit=1`
+        ).catch(() => []);
+
+        if (!Array.isArray(rows) || rows.length === 0) {
+            return null;
+        }
+
+        const row = rows[0];
+        return {
+            encontrada: true,
+            numeroNF: row.numero_nf,
+            cliente: row.cliente,
+            transportadora: row.transportadora,
+            artigo: row.artigo,
+            pedido: row.pedido,
+            quantidadeItens: row.quantidade_itens,
+            metros: row.metros,
+            pesoBruto: row.peso_bruto,
+            valorTotal: row.valor_total,
+            dataEmissao: row.data_emissao,
+        };
+    } catch (error) {
+        console.warn('[Supabase] Falha ao buscar NF por numero:', error?.message || error);
+        return null;
     }
 }
 
@@ -629,11 +1025,12 @@ function agendarBipagemAutomatica(tipo) {
 }
 
 function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
+    const tipoNormalizado = normalizarTipoBipagem(tipo);
     const resultadoBusca = buscarNotaPorCodigo(numeroNF);
     let nota = resultadoBusca ? resultadoBusca.nota : null;
     const numeroNFExtraido = resultadoBusca ? resultadoBusca.numeroExtraido : extrairNumeroNF(numeroNF);
 
-    if (!nota && tipo === 'faturamento' && numeroNFExtraido) {
+    if (!nota && tipoNormalizado === 'faturamento' && numeroNFExtraido) {
         // No faturamento, se a NF ainda não existe no cadastro, cria automaticamente
         // para manter o mesmo número disponível no admin e na expedição.
         nota = criarNotaAPartirDaLeitura(numeroNFExtraido);
@@ -644,7 +1041,7 @@ function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
         return false;
     }
 
-    const listaBipagens = tipo === 'faturamento' ? appState.bipagensFaturamento : appState.bipagensExpedicao;
+    const listaBipagens = tipoNormalizado === 'faturamento' ? appState.bipagensFaturamento : appState.bipagensExpedicao;
     const ultimaBipagem = listaBipagens.length > 0 ? listaBipagens[listaBipagens.length - 1] : null;
 
     if (ultimaBipagem && ultimaBipagem.numeroNF === numeroNFExtraido) {
@@ -669,13 +1066,13 @@ function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
         criadoEm: new Date().toLocaleString('pt-BR')
     };
 
-    if (tipo === 'faturamento') {
+    if (tipoNormalizado === 'faturamento') {
         appState.bipagensFaturamento.push(bipagem);
         nota.status = 'faturada';
         void sincronizarNfSupabase(nota);
         void sincronizarBipagemSupabase(nota, 'faturamento', dataHora, dataHoraManual);
         alert('✅ Nota fiscal faturada com sucesso!');
-    } else if (tipo === 'expedicao') {
+    } else if (tipoNormalizado === 'expedicao') {
         appState.bipagensExpedicao.push(bipagem);
         nota.status = 'expedida';
         void sincronizarNfSupabase(nota);
@@ -690,22 +1087,19 @@ function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
 // FUNÇÕES DE ADMINISTRAÇÃO
 // ========================================
 
-function aprovarSolicitacao(id) {
+async function aprovarSolicitacao(id) {
     const solicitacao = appState.solicitacoes.find(s => s.id === id);
     if (solicitacao) {
         solicitacao.status = 'aprovada';
-        const novoUsuario = {
-            id: Math.random(),
-            nome: solicitacao.nome,
-            email: solicitacao.email,
-            senha: solicitacao.senha,
-            papel: solicitacao.papel,
-            status: 'ativo'
-        };
-        appState.usuarios.push(novoUsuario);
-        void atualizarStatusSolicitacaoSupabase(solicitacao);
-        void sincronizarPerfilSupabase(novoUsuario);
-        alert('✅ Solicitação aprovada!');
+        try {
+            await atualizarStatusSolicitacaoSupabase(solicitacao);
+            await ativarPerfilAprovadoSupabase(solicitacao);
+            await carregarDadosSupabase();
+            alert('✅ Solicitação aprovada!');
+        } catch (error) {
+            console.warn('[Supabase] Falha ao ativar perfil aprovado:', error?.message || error);
+            alert('⚠️ Solicitação aprovada, mas não foi possível ativar perfil no banco. Verifique a policy de admin em profiles.');
+        }
         renderizar();
     }
 }
@@ -720,7 +1114,7 @@ function rejeitarSolicitacao(id) {
     }
 }
 
-function criarSolicitacao(nome, email, senha, papel) {
+async function criarSolicitacao(nome, email, senha, papel) {
     const emailNormalizado = email.trim().toLowerCase();
     const nomeNormalizado = nome.trim().toLowerCase();
 
@@ -750,6 +1144,30 @@ function criarSolicitacao(nome, email, senha, papel) {
         papel: papel,
         status: 'pendente'
     };
+
+    let signupResult = null;
+    try {
+        signupResult = await supabaseAuthSignUp(emailNormalizado, senha, nome.trim());
+    } catch (error) {
+        const msg = String(error?.message || '').toLowerCase();
+        const usuarioJaExiste = msg.includes('already') || msg.includes('exists') || msg.includes('registered');
+        if (!usuarioJaExiste) {
+            alert('❌ Falha ao criar usuário no Supabase Auth. Tente novamente.');
+            return;
+        }
+    }
+
+    if (signupResult && signupResult.user && signupResult.access_token) {
+        try {
+            setAuthSession(signupResult);
+            await definirPerfilPendenteDoSolicitante(signupResult.user, nome.trim(), emailNormalizado, papel);
+        } catch (error) {
+            console.warn('[Supabase] Falha ao registrar perfil pendente na solicitação:', error?.message || error);
+        } finally {
+            await supabaseAuthSignOut();
+        }
+    }
+
     appState.solicitacoes.push(novaSolicitacao);
     void sincronizarSolicitacaoSupabase(novaSolicitacao);
     alert('✅ Solicitação enviada com sucesso!');
@@ -1155,7 +1573,7 @@ function renderizarLogin() {
     `;
 }
 
-function handleLogin(event) {
+async function handleLogin(event) {
     event.preventDefault();
     const login = document.getElementById('loginUsuario').value;
     const senha = document.getElementById('loginSenha').value;
@@ -1165,7 +1583,7 @@ function handleLogin(event) {
         return;
     }
 
-    fazerLogin(login, senha);
+    await fazerLogin(login, senha);
 }
 
 // ========================================
@@ -1220,7 +1638,7 @@ function renderizarSolicitarAcesso() {
     `;
 }
 
-function handleSolicitarAcesso(event) {
+async function handleSolicitarAcesso(event) {
     event.preventDefault();
     const nome = document.getElementById('nome').value;
     const email = document.getElementById('email').value;
@@ -1232,10 +1650,10 @@ function handleSolicitarAcesso(event) {
         return;
     }
 
-    criarSolicitacao(nome, email, senha, papel);
+    await criarSolicitacao(nome, email, senha, papel);
 }
 
-function handleAlterarSenha(event) {
+async function handleAlterarSenha(event) {
     event.preventDefault();
 
     const senhaAtual = document.getElementById('senhaAtual').value;
@@ -1247,7 +1665,7 @@ function handleAlterarSenha(event) {
         return;
     }
 
-    const alterou = alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha);
+    const alterou = await alterarSenhaUsuario(senhaAtual, novaSenha, confirmarSenha);
     if (alterou) {
         irParaPagina('dashboard', appState.currentUser);
     }
@@ -1572,14 +1990,18 @@ async function handleBiparFaturamento() {
         return;
     }
 
-    const dadosXML = await buscarDadosNFNoXML(numeroExtraido);
-    if (dadosXML && dadosXML.encontrada) {
+    let dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
+    if (!dadosNF) {
+        dadosNF = await buscarDadosNFNoXML(numeroExtraido);
+    }
+
+    if (dadosNF && dadosNF.encontrada) {
         let resultado = buscarNotaPorCodigo(numeroExtraido);
         let nota = resultado ? resultado.nota : null;
         if (!nota) {
             nota = criarNotaAPartirDaLeitura(numeroExtraido);
         }
-        aplicarDadosXMLNaNota(nota, dadosXML);
+        aplicarDadosXMLNaNota(nota, dadosNF);
     }
 
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
