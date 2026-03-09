@@ -651,14 +651,39 @@ async function atualizarStatusSolicitacaoSupabase(solicitacao) {
             }
         }
 
-        await supabaseRequest(
+        const porEmail = await supabaseRequest(
             `${supabaseConfig.tables.solicitacoes}?email=eq.${encodeURIComponent(emailFinal)}&status=eq.pendente&select=id,status,email`,
             {
                 method: 'PATCH',
                 headers: { Prefer: 'return=representation' },
                 body: { status: statusFinal },
             }
-        );
+        ).catch(() => []);
+
+        if (Array.isArray(porEmail) && porEmail.length > 0) {
+            return;
+        }
+
+        // Fallback robusto: remove solicitações pendentes processadas quando UPDATE não é suportado no schema/policy atual.
+        if (solicitacao.id) {
+            await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?id=eq.${encodeURIComponent(solicitacao.id)}&select=id,email`,
+                {
+                    method: 'DELETE',
+                    headers: { Prefer: 'return=representation' },
+                }
+            ).catch(() => null);
+        }
+
+        if (emailFinal) {
+            await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?email=eq.${encodeURIComponent(emailFinal)}&status=eq.pendente&select=id,email`,
+                {
+                    method: 'DELETE',
+                    headers: { Prefer: 'return=representation' },
+                }
+            ).catch(() => null);
+        }
     } catch (error) {
         console.warn('[Supabase] Falha ao atualizar status da solicitação:', error?.message || error);
     }
