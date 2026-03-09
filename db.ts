@@ -160,5 +160,16 @@ export async function getSolicitacoesAcesso() {
 export async function updateSolicitacaoAcesso(id: number, status: "pendente" | "aprovada" | "rejeitada") {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return await db.update(solicitacoesAcesso).set({ status }).where(eq(solicitacoesAcesso.id, id));
+
+  const result = await db.update(solicitacoesAcesso).set({ status }).where(eq(solicitacoesAcesso.id, id));
+  const affectedRows = Number(
+    (result as any)?.rowsAffected ??
+    (result as any)?.affectedRows ??
+    0,
+  );
+
+  return {
+    result,
+    affectedRows,
+  };
 }

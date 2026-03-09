@@ -49,16 +49,34 @@ export const appRouter = router({
     }),
 
     aprovar: adminProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.union([z.number(), z.string()]) }))
       .mutation(async ({ input }) => {
-        await db.updateSolicitacaoAcesso(input.id, "aprovada");
+        const id = typeof input.id === "string" ? Number(input.id) : input.id;
+        if (!Number.isFinite(id)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "ID de solicitação inválido" });
+        }
+
+        const update = await db.updateSolicitacaoAcesso(id, "aprovada");
+        if (update.affectedRows === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada para aprovação" });
+        }
+
         return { success: true };
       }),
 
     rejeitar: adminProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.union([z.number(), z.string()]) }))
       .mutation(async ({ input }) => {
-        await db.updateSolicitacaoAcesso(input.id, "rejeitada");
+        const id = typeof input.id === "string" ? Number(input.id) : input.id;
+        if (!Number.isFinite(id)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "ID de solicitação inválido" });
+        }
+
+        const update = await db.updateSolicitacaoAcesso(id, "rejeitada");
+        if (update.affectedRows === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada para rejeição" });
+        }
+
         return { success: true };
       }),
   }),

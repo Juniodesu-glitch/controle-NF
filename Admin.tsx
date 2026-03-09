@@ -23,23 +23,23 @@ export default function Admin() {
     navigate("/login");
   };
 
-  const handleAprovar = async (id: number) => {
+  const handleAprovar = async (id: number | string) => {
     try {
       await aprovarMutation.mutateAsync({ id });
       toast.success("Solicitação aprovada!");
       solicitacoes.refetch();
     } catch (error) {
-      toast.error("Erro ao aprovar solicitação");
+      toast.error((error as any)?.message || "Erro ao aprovar solicitação");
     }
   };
 
-  const handleRejeitar = async (id: number) => {
+  const handleRejeitar = async (id: number | string) => {
     try {
       await rejeitarMutation.mutateAsync({ id });
       toast.success("Solicitação rejeitada!");
       solicitacoes.refetch();
     } catch (error) {
-      toast.error("Erro ao rejeitar solicitação");
+      toast.error((error as any)?.message || "Erro ao rejeitar solicitação");
     }
   };
 
