@@ -79,6 +79,12 @@ appState.filtros = {
     transportadoraFaturista: '',
 };
 
+appState.cache = {
+    transportadorasFaturistaXml: [],
+    carregandoTransportadorasFaturista: false,
+    transportadorasFaturistaAtualizadoEm: 0,
+};
+
 async function sincronizarDadosEmSegundoPlano() {
     if (!appState.currentUser || appState.sync.emAndamento) return;
 
@@ -1623,7 +1629,7 @@ async function gerarRelatorioExpedicaoExcel() {
     }
 
     const numeroFormatter = new Intl.NumberFormat('pt-BR', {
-        minimumFractionDigits: 2,
+        minimumFractionDigits: 0,
         maximumFractionDigits: 2,
     });
 
@@ -2439,15 +2445,7 @@ function renderizarRelatorios() {
 }
 
 function getTransportadorasFaturistaDisponiveis() {
-    const transportadoras = appState.notasFiscais
-        .filter((nf) => {
-            const status = String(nf.status || '').trim().toLowerCase();
-            return status !== 'expedida' && status !== 'entregue';
-        })
-        .map((nf) => String(nf.transportadora || '').trim())
-        .filter(Boolean);
-
-    return Array.from(new Set(transportadoras)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return [...appState.cache.transportadorasFaturistaXml];
 }
 
 function setFiltroTransportadoraFaturista(valor) {
@@ -2486,13 +2484,18 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
             }
         }
 
+        // Regra de negocio: usar somente NFs com dados extraidos da fonte oficial (XML/Supabase NFs).
+        if (!dadosNf || !dadosNf.encontrada) {
+            continue;
+        }
+
         const artigo = String(dadosNf?.artigo ?? nota.artigo ?? '-');
         const pedido = String(dadosNf?.pedido ?? nota.pedido ?? '-');
         const pesoBruto = toNumber(dadosNf?.pesoBruto ?? nota.pesoBruto ?? 0);
         const metros = toNumber(dadosNf?.metros ?? nota.metros ?? 0);
         const pcs = toNumber(dadosNf?.quantidadeItens ?? nota.quantidadeItens ?? 0);
         const cliente = String(dadosNf?.cliente ?? nota.cliente ?? '-');
-        const transportadora = String(dadosNf?.transportadora ?? nota.transportadora ?? '').trim();
+        const transportadora = String(dadosNf?.transportadora || '').trim();
         const dataNfRaw = String(dadosNf?.dataEmissao ?? nota.dataEmissao ?? '');
 
         if (!transportadora) {
@@ -2529,6 +2532,38 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
     return linhas;
 }
 
+async function atualizarTransportadorasFaturistaDoXml(force = false) {
+    if (appState.cache.carregandoTransportadorasFaturista) return;
+
+    const agora = Date.now();
+    const cacheAindaValido = (agora - appState.cache.transportadorasFaturistaAtualizadoEm) < 120000;
+    if (!force && cacheAindaValido && appState.cache.transportadorasFaturistaXml.length > 0) {
+        return;
+    }
+
+    appState.cache.carregandoTransportadorasFaturista = true;
+    try {
+        const linhas = await montarLinhasExportacaoFaturista('');
+        const transportadoras = Array.from(new Set(linhas.map((l) => String(l.transp || '').trim()).filter(Boolean)))
+            .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+        appState.cache.transportadorasFaturistaXml = transportadoras;
+        appState.cache.transportadorasFaturistaAtualizadoEm = Date.now();
+
+        if (
+            appState.currentPage === 'dashboard' &&
+            appState.currentUser &&
+            appState.currentUser.papel === 'faturista'
+        ) {
+            renderizar();
+        }
+    } catch (error) {
+        console.warn('[Exportacao] Falha ao atualizar transportadoras do faturista via XML:', error?.message || error);
+    } finally {
+        appState.cache.carregandoTransportadorasFaturista = false;
+    }
+}
+
 async function gerarPlanilhaFaturistaExcel() {
     const transportadoraFiltro = String(appState.filtros.transportadoraFaturista || '').trim();
     if (!transportadoraFiltro) {
@@ -2563,16 +2598,16 @@ async function gerarPlanilhaFaturistaExcel() {
 
     const linhasHtml = linhas.map((l) => `
         <tr>
-            <td>${escapeHtml(l.artigo)}</td>
-            <td>${escapeHtml(l.pedido)}</td>
-            <td style="text-align:right">${escapeHtml(formatNumero(l.pesoBruto))}</td>
-            <td style="text-align:right">${escapeHtml(formatNumero(l.metros))}</td>
-            <td style="text-align:right">${escapeHtml(formatNumero(l.pcs))}</td>
-            <td>${escapeHtml(l.cliente)}</td>
-            <td style="text-align:center">${escapeHtml(l.nf)}</td>
-            <td style="text-align:center">${escapeHtml(l.res)}</td>
-            <td>${escapeHtml(l.transp)}</td>
-            <td style="text-align:center">${escapeHtml(formatData(l.dataNf))}</td>
+            <td class="left">${escapeHtml(l.artigo)}</td>
+            <td class="center">${escapeHtml(l.pedido)}</td>
+            <td class="right">${escapeHtml(formatNumero(l.pesoBruto))}</td>
+            <td class="right">${escapeHtml(formatNumero(l.metros))}</td>
+            <td class="right">${escapeHtml(formatNumero(l.pcs))}</td>
+            <td class="left">${escapeHtml(l.cliente)}</td>
+            <td class="center nf-col">${escapeHtml(l.nf)}</td>
+            <td class="center">${escapeHtml(l.res)}</td>
+            <td class="left">${escapeHtml(l.transp)}</td>
+            <td class="center">${escapeHtml(formatData(l.dataNf))}</td>
         </tr>
     `).join('');
 
@@ -2581,28 +2616,38 @@ async function gerarPlanilhaFaturistaExcel() {
 <head>
     <meta charset="UTF-8" />
     <style>
-        table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
-        th, td { border: 1px solid #000; padding: 5px 6px; font-size: 12px; }
-        th { background: #efefef; font-weight: 700; text-align: center; }
-        .titulo { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
-        .sub { margin-bottom: 10px; font-size: 12px; }
+        table { border-collapse: collapse; width: 100%; table-layout: fixed; font-family: Arial, sans-serif; }
+        th, td { border: 1px solid #1d1d1d; padding: 3px 4px; font-size: 12px; background: #e9e9e9; }
+        th { font-weight: 700; text-align: center; background: #e2e2e2; }
+        .left { text-align: left; }
+        .center { text-align: center; }
+        .right { text-align: right; }
+        .nf-col { background: #fff200; }
+        .w-artigo { width: 23%; }
+        .w-pedido { width: 6%; }
+        .w-peso { width: 7%; }
+        .w-metros { width: 7%; }
+        .w-pcs { width: 5%; }
+        .w-cliente { width: 30%; }
+        .w-nf { width: 7%; }
+        .w-res { width: 5%; }
+        .w-trans { width: 12%; }
+        .w-data { width: 8%; }
     </style>
 </head>
 <body>
-    <div class="titulo">PLANILHA DE FATURAMENTO - FIFO POR DATA DA NF</div>
-    <div class="sub">Transportadora: ${escapeHtml(transportadoraFiltro)} | Gerado em: ${escapeHtml(new Date().toLocaleString('pt-BR'))}</div>
     <table>
         <tr>
-            <th>Artigo</th>
-            <th>Pedido</th>
-            <th>Peso Bruto</th>
-            <th>Metros</th>
-            <th>PÇS</th>
-            <th>Cliente</th>
-            <th>NF</th>
-            <th>Res</th>
-            <th>Trans</th>
-            <th>Data NF</th>
+            <th class="w-artigo">ARTIGO</th>
+            <th class="w-pedido">PEDIDO</th>
+            <th class="w-peso">P BRUTO</th>
+            <th class="w-metros">METROS</th>
+            <th class="w-pcs">PÇS</th>
+            <th class="w-cliente">CLIENTE</th>
+            <th class="w-nf">NF</th>
+            <th class="w-res">RES</th>
+            <th class="w-trans">TRANS</th>
+            <th class="w-data">DATA NF</th>
         </tr>
         ${linhasHtml}
     </table>
@@ -2623,6 +2668,8 @@ async function gerarPlanilhaFaturistaExcel() {
 // ========================================
 
 function renderizarFaturista() {
+    void atualizarTransportadorasFaturistaDoXml();
+
     const transportadorasDisponiveis = getTransportadorasFaturistaDisponiveis();
     if (appState.filtros.transportadoraFaturista && !transportadorasDisponiveis.includes(appState.filtros.transportadoraFaturista)) {
         appState.filtros.transportadoraFaturista = '';
@@ -2658,6 +2705,7 @@ function renderizarFaturista() {
                                 <option value="" ${appState.filtros.transportadoraFaturista ? '' : 'selected'}>Selecione a transportadora</option>
                                 ${transportadorasDisponiveis.map((t) => `<option value="${t}" ${appState.filtros.transportadoraFaturista === t ? 'selected' : ''}>${t}</option>`).join('')}
                             </select>
+                            ${appState.cache.carregandoTransportadorasFaturista ? '<p style="color: var(--text-secondary); font-size: 12px; margin-top: 6px;">Carregando transportadoras a partir das NFs (XML)...</p>' : ''}
                         </div>
                         <button class="btn btn-primary" style="min-height:44px;" onclick="gerarPlanilhaFaturistaExcel()">
                             📊 Exportar Planilha Faturista
