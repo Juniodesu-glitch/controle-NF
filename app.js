@@ -640,6 +640,27 @@ async function atualizarStatusSolicitacaoSupabase(solicitacao) {
         const statusFinal = String(solicitacao.status || 'pendente').trim().toLowerCase();
         const emailFinal = String(solicitacao.email || '').toLowerCase().trim();
 
+        // Prioriza RPC para contornar RLS quando a funcao server-side estiver disponivel.
+        try {
+            const rpcResult = await supabaseRpc('atualizar_status_solicitacao_app', {
+                p_id: solicitacao.id ?? null,
+                p_email: emailFinal || null,
+                p_status: statusFinal,
+            });
+            const rpcPayload = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult;
+            const updatedByRpc = Number(
+                rpcPayload?.updated_rows ??
+                rpcPayload?.affected_rows ??
+                rpcPayload?.rows_affected ??
+                (rpcPayload === true ? 1 : 0)
+            );
+            if (updatedByRpc > 0) {
+                return true;
+            }
+        } catch (rpcError) {
+            // Sem RPC: segue para fluxo REST atual.
+        }
+
         if (solicitacao.id) {
             const porId = await supabaseRequest(
                 `${supabaseConfig.tables.solicitacoes}?id=eq.${encodeURIComponent(solicitacao.id)}&select=id,status,email`,
@@ -902,6 +923,18 @@ async function garantirAuthDoAprovado(solicitacao) {
 
 async function ativarPerfilAprovadoSupabase(solicitacao) {
     const email = String(solicitacao.email || '').toLowerCase();
+
+    try {
+        await supabaseRpc('ativar_perfil_aprovado_app', {
+            p_nome: String(solicitacao.nome || ''),
+            p_email: email,
+            p_role: String(solicitacao.papel || 'faturista'),
+        });
+        return;
+    } catch (rpcError) {
+        // Sem RPC: usa REST.
+    }
+
     await supabaseRequest(
         `${supabaseConfig.tables.perfis}?email=eq.${encodeURIComponent(email)}`,
         {
@@ -1398,14 +1431,9 @@ function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
 async function aprovarSolicitacao(id) {
     const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
+        const statusOriginal = solicitacao.status;
         solicitacao.status = 'aprovada';
         const emailNormalizado = String(solicitacao.email || '').toLowerCase().trim();
-        appState.solicitacoes = appState.solicitacoes.filter(s => {
-            const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
-                && String(s.status || '').trim().toLowerCase() === 'pendente';
-            return !mesmoEmailPendente;
-        });
-        renderizar();
 
         try {
             await garantirAuthDoAprovado(solicitacao);
@@ -1414,9 +1442,18 @@ async function aprovarSolicitacao(id) {
                 throw new Error('status_nao_atualizado_no_banco');
             }
             await ativarPerfilAprovadoSupabase(solicitacao);
+
+            // Remove somente apos confirmacao no banco.
+            appState.solicitacoes = appState.solicitacoes.filter(s => {
+                const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
+                    && String(s.status || '').trim().toLowerCase() === 'pendente';
+                return !mesmoEmailPendente;
+            });
+
             await carregarDadosSupabase();
             alert('✅ Solicitação aprovada!');
         } catch (error) {
+            solicitacao.status = statusOriginal;
             console.warn('[Supabase] Falha ao ativar perfil aprovado:', error?.message || error);
             alert('⚠️ Solicitação aprovada localmente, mas o banco não confirmou a mudança. Verifique a policy de UPDATE em solicitacoes_acesso.');
         }
@@ -1427,18 +1464,20 @@ async function aprovarSolicitacao(id) {
 async function rejeitarSolicitacao(id) {
     const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
+        const statusOriginal = solicitacao.status;
         solicitacao.status = 'rejeitada';
         const emailNormalizado = String(solicitacao.email || '').toLowerCase().trim();
-        appState.solicitacoes = appState.solicitacoes.filter(s => {
-            const mesmoId = String(s.id) === String(id);
-            const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
-                && String(s.status || '').trim().toLowerCase() === 'pendente';
-            return !(mesmoId || mesmoEmailPendente);
-        });
         const statusAtualizado = await atualizarStatusSolicitacaoSupabase(solicitacao);
         if (statusAtualizado) {
+            appState.solicitacoes = appState.solicitacoes.filter(s => {
+                const mesmoId = String(s.id) === String(id);
+                const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
+                    && String(s.status || '').trim().toLowerCase() === 'pendente';
+                return !(mesmoId || mesmoEmailPendente);
+            });
             alert('❌ Solicitação rejeitada!');
         } else {
+            solicitacao.status = statusOriginal;
             alert('⚠️ Rejeição aplicada localmente, mas o banco não confirmou a mudança.');
         }
         renderizar();
