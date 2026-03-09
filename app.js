@@ -663,7 +663,7 @@ async function atualizarStatusSolicitacaoSupabase(solicitacao) {
             }
 
             if (Array.isArray(porId) && porId.length > 0) {
-                return;
+                return true;
             }
         }
 
@@ -677,12 +677,13 @@ async function atualizarStatusSolicitacaoSupabase(solicitacao) {
         ).catch(() => []);
 
         if (Array.isArray(porEmail) && porEmail.length > 0) {
-            return;
+            return true;
         }
 
         // Para aprovacao, evita apagar a solicitacao: ela funciona como trilha/auditoria e fallback de login.
+        // Se nao conseguiu atualizar no banco, sinaliza falha para a tela nao recarregar estado pendente.
         if (statusFinal === 'aprovada') {
-            return;
+            return false;
         }
 
         // Fallback robusto: remove solicitações pendentes processadas quando UPDATE não é suportado no schema/policy atual.
@@ -705,8 +706,11 @@ async function atualizarStatusSolicitacaoSupabase(solicitacao) {
                 }
             ).catch(() => null);
         }
+
+        return true;
     } catch (error) {
         console.warn('[Supabase] Falha ao atualizar status da solicitação:', error?.message || error);
+        return false;
     }
 }
 
@@ -1405,19 +1409,22 @@ async function aprovarSolicitacao(id) {
 
         try {
             await garantirAuthDoAprovado(solicitacao);
-            await atualizarStatusSolicitacaoSupabase(solicitacao);
+            const statusAtualizado = await atualizarStatusSolicitacaoSupabase(solicitacao);
+            if (!statusAtualizado) {
+                throw new Error('status_nao_atualizado_no_banco');
+            }
             await ativarPerfilAprovadoSupabase(solicitacao);
             await carregarDadosSupabase();
             alert('✅ Solicitação aprovada!');
         } catch (error) {
             console.warn('[Supabase] Falha ao ativar perfil aprovado:', error?.message || error);
-            alert('⚠️ Solicitação aprovada, mas não foi possível ativar perfil no banco. Verifique a policy de admin em profiles.');
+            alert('⚠️ Solicitação aprovada localmente, mas o banco não confirmou a mudança. Verifique a policy de UPDATE em solicitacoes_acesso.');
         }
         renderizar();
     }
 }
 
-function rejeitarSolicitacao(id) {
+async function rejeitarSolicitacao(id) {
     const solicitacao = appState.solicitacoes.find(s => String(s.id) === String(id));
     if (solicitacao) {
         solicitacao.status = 'rejeitada';
@@ -1428,8 +1435,12 @@ function rejeitarSolicitacao(id) {
                 && String(s.status || '').trim().toLowerCase() === 'pendente';
             return !(mesmoId || mesmoEmailPendente);
         });
-        void atualizarStatusSolicitacaoSupabase(solicitacao);
-        alert('❌ Solicitação rejeitada!');
+        const statusAtualizado = await atualizarStatusSolicitacaoSupabase(solicitacao);
+        if (statusAtualizado) {
+            alert('❌ Solicitação rejeitada!');
+        } else {
+            alert('⚠️ Rejeição aplicada localmente, mas o banco não confirmou a mudança.');
+        }
         renderizar();
     }
 }
