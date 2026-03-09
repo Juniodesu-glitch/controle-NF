@@ -1693,49 +1693,99 @@ async function gerarRelatorioExpedicaoExcel() {
     const data = agora.toLocaleDateString('pt-BR');
     const hora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-    const linhas = [];
-    linhas.push(['', '', '', '', '', '', '', 'DATA:', `${data} HORA: ${hora}`]);
-    linhas.push(['', '', '', '', '', '', '', '', '']);
-    linhas.push(['CONTROLE DE CARREGAMENTO', '', '', '', '', '', '', '', '']);
-    linhas.push([transportadoraCabecalho, '', '', '', '', '', '', '', '']);
-    linhas.push(['ARTIGO', 'PEDIDO', 'P BRUTO', 'METROS', 'PÇS', 'CLIENTE', 'NF', 'RES', 'TRANSP']);
+    const escapeHtml = (valor) => String(valor ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 
-    linhasDados.forEach((l) => {
-        linhas.push([
-            l.artigo,
-            l.pedido,
-            formatNumero(l.pesoBruto),
-            formatNumero(l.metros),
-            formatNumero(l.pcs),
-            l.cliente,
-            l.nf,
-            l.res,
-            l.transp,
-        ]);
-    });
+    const linhasHtml = linhasDados.map((l) => `
+        <tr>
+            <td class="left">${escapeHtml(l.artigo)}</td>
+            <td class="center">${escapeHtml(l.pedido)}</td>
+            <td class="right">${escapeHtml(formatNumero(l.pesoBruto))}</td>
+            <td class="right">${escapeHtml(formatNumero(l.metros))}</td>
+            <td class="right">${escapeHtml(formatNumero(l.pcs))}</td>
+            <td class="left">${escapeHtml(l.cliente)}</td>
+            <td class="center">${escapeHtml(l.nf)}</td>
+            <td class="center">${escapeHtml(l.res)}</td>
+            <td class="left">${escapeHtml(l.transp)}</td>
+        </tr>
+    `).join('');
 
-    linhas.push([
-        'TOTAL',
-        '',
-        formatNumero(totalPeso),
-        formatNumero(totalMetros),
-        formatNumero(totalPcs),
-        '',
-        '',
-        '',
-        '',
-    ]);
-    linhas.push(['PLACA', '____________________', '', '', '', 'CONFERENTE', '____________________', '', '']);
-    linhas.push(['ASSINATURA DO CONFERENTE', '____________________', '', '', '', '', '', '', '']);
-    linhas.push(['ASSINATURA DO MOTORISTA', '____________________', '', '', '', 'DOC RG', '____________________', '', '']);
+    const htmlExcel = `
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <style>
+        table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
+        td, th { border: 1px solid #000; padding: 4px 6px; font-size: 13px; }
+        .brand { font-size: 28px; font-weight: 700; color: #0d47a1; }
+        .title { font-size: 36px; font-weight: 700; color: #d50000; text-align: center; }
+        .subtitle { font-size: 36px; font-weight: 700; color: #d50000; text-align: center; }
+        .header { font-size: 20px; font-weight: 700; text-align: center; }
+        .center { text-align: center; }
+        .right { text-align: right; }
+        .left { text-align: left; }
+        .total { font-weight: 700; }
+        .metaLabel { font-weight: 700; text-align: center; background: #dbe7f3; }
+        .metaValue { font-weight: 700; text-align: center; background: #dbe7f3; }
+        .footerLabel { font-size: 34px; font-weight: 700; }
+    </style>
+</head>
+<body>
+    <table>
+        <tr>
+            <td colspan="7" class="brand">capricórnio</td>
+            <td class="metaLabel">DATA:</td>
+            <td class="metaValue">${escapeHtml(data)} HORA: ${escapeHtml(hora)}</td>
+        </tr>
+        <tr>
+            <td colspan="9" class="title">CONTROLE DE CARREGAMENTO</td>
+        </tr>
+        <tr>
+            <td colspan="9" class="subtitle">${escapeHtml(transportadoraCabecalho).toUpperCase()}</td>
+        </tr>
+        <tr>
+            <th class="header">ARTIGO</th>
+            <th class="header">PEDIDO</th>
+            <th class="header">P BRUTO</th>
+            <th class="header">METROS</th>
+            <th class="header">PÇS</th>
+            <th class="header">CLIENTE</th>
+            <th class="header">NF</th>
+            <th class="header">RES</th>
+            <th class="header">TRANSP</th>
+        </tr>
+        ${linhasHtml}
+        <tr class="total">
+            <td colspan="2" class="center">TOTAL</td>
+            <td class="right">${escapeHtml(formatNumero(totalPeso))}</td>
+            <td class="right">${escapeHtml(formatNumero(totalMetros))}</td>
+            <td class="right">${escapeHtml(formatNumero(totalPcs))}</td>
+            <td colspan="4"></td>
+        </tr>
+        <tr>
+            <td colspan="3" class="footerLabel">PLACA ________________</td>
+            <td colspan="6" class="footerLabel">CONFERENTE ____________________________</td>
+        </tr>
+        <tr>
+            <td colspan="5" class="footerLabel">ASSINATURA DO CONFERENTE ____________________________</td>
+            <td colspan="4"></td>
+        </tr>
+        <tr>
+            <td colspan="5" class="footerLabel">ASSINATURA DO MOTORISTA ____________________________</td>
+            <td colspan="4" class="footerLabel">DOC RG ____________________</td>
+        </tr>
+    </table>
+</body>
+</html>`;
 
-    const escapar = (valor) => `"${String(valor ?? '').replace(/"/g, '""')}"`;
-    const csv = '\uFEFF' + linhas.map((linha) => linha.map(escapar).join(';')).join('\r\n');
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['\uFEFF', htmlExcel], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `relatorio_expedicao_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `controle_carregamento_${new Date().toISOString().slice(0, 10)}.xls`;
     link.click();
 
     alert('✅ Download do relatório Excel iniciado!');
