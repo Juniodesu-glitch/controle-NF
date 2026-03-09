@@ -772,6 +772,39 @@ function autenticarPerfilLocal(loginNormalizado, emailParaLogin, senha) {
     };
 }
 
+function autenticarSolicitacaoAprovada(loginNormalizado, emailParaLogin, senha) {
+    const senhaInformada = String(senha || '');
+
+    const solicitacaoAprovada = appState.solicitacoes.find((s) => {
+        const statusAprovado = String(s.status || '').trim().toLowerCase() === 'aprovada';
+        if (!statusAprovado) return false;
+
+        const emailMatch = emailParaLogin && String(s.email || '').toLowerCase() === emailParaLogin;
+        const nomeMatch = String(s.nome || '').toLowerCase() === loginNormalizado;
+        if (!emailMatch && !nomeMatch) return false;
+
+        const senhaSalva = String(s.senha || '');
+        // Se a coluna senha nao estiver disponivel na solicitacao, trata a senha digitada como senha inicial.
+        return !senhaSalva || senhaSalva === senhaInformada;
+    });
+
+    if (!solicitacaoAprovada) {
+        return { ok: false, usuario: null };
+    }
+
+    return {
+        ok: true,
+        usuario: {
+            id: solicitacaoAprovada.id || Math.floor(Math.random() * 1_000_000_000),
+            nome: String(solicitacaoAprovada.nome || loginNormalizado || ''),
+            email: String(solicitacaoAprovada.email || emailParaLogin || '').toLowerCase(),
+            senha: senhaInformada,
+            papel: String(solicitacaoAprovada.papel || 'faturista'),
+            status: 'ativo',
+        },
+    };
+}
+
 async function definirPerfilPendenteDoSolicitante(authUser, nome, email, papel) {
     if (!authUser || !authUser.id) return;
 
@@ -929,6 +962,30 @@ async function fazerLogin(login, senha) {
         if (localDepois.ok && localDepois.usuario) {
             iniciarSincronizacaoAutomatica();
             irParaPagina('dashboard', { ...localDepois.usuario });
+            return true;
+        }
+
+        const aprovado = autenticarSolicitacaoAprovada(loginNormalizado, emailParaLogin, senhaNormalizada);
+        if (aprovado.ok && aprovado.usuario) {
+            const idx = appState.usuarios.findIndex((u) => String(u.email || '').toLowerCase() === String(aprovado.usuario.email || '').toLowerCase());
+            if (idx >= 0) {
+                appState.usuarios[idx] = { ...appState.usuarios[idx], ...aprovado.usuario };
+            } else {
+                appState.usuarios.push({ ...aprovado.usuario });
+            }
+
+            // Reforca sincronizacao para que os proximos logins funcionem mesmo sem fallback.
+            await sincronizarPerfilSupabase(aprovado.usuario).catch(() => null);
+            await garantirAuthDoAprovado({
+                nome: aprovado.usuario.nome,
+                email: aprovado.usuario.email,
+                senha: senhaNormalizada,
+                papel: aprovado.usuario.papel,
+            }).catch(() => null);
+            await carregarDadosSupabase().catch(() => null);
+
+            iniciarSincronizacaoAutomatica();
+            irParaPagina('dashboard', { ...aprovado.usuario });
             return true;
         }
 
