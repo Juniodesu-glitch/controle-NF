@@ -831,6 +831,19 @@ async function buscarSolicitacaoAprovadaNoSupabase(loginNormalizado, emailParaLo
             if (Array.isArray(porNome) && porNome.length > 0) {
                 return mapSolicitacaoRowToLocal(porNome[0]);
             }
+
+            // Fallback case-insensitive para variacoes de caixa no nome.
+            const aprovadasRecentes = await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?select=*&status=eq.aprovada&order=id.desc&limit=100`
+            ).catch(() => []);
+            if (Array.isArray(aprovadasRecentes) && aprovadasRecentes.length > 0) {
+                const matchNome = aprovadasRecentes.find((row) =>
+                    String(row.nome || '').trim().toLowerCase() === nome
+                );
+                if (matchNome) {
+                    return mapSolicitacaoRowToLocal(matchNome);
+                }
+            }
         }
     } catch {
         return null;
@@ -1003,6 +1016,9 @@ async function fazerLogin(login, senha) {
         if (!aprovado.ok) {
             const aprovadoSupabase = await buscarSolicitacaoAprovadaNoSupabase(loginNormalizado, emailParaLogin);
             if (aprovadoSupabase) {
+                if (!emailParaLogin || !emailParaLogin.includes('@')) {
+                    emailParaLogin = String(aprovadoSupabase.email || '').toLowerCase();
+                }
                 aprovado = autenticarSolicitacaoAprovada(
                     loginNormalizado,
                     String(aprovadoSupabase.email || emailParaLogin || '').toLowerCase(),
@@ -1895,7 +1911,7 @@ function renderizarLogin() {
                 </form>
 
                 <div class="login-buttons" style="margin-top: 12px;">
-                    <button class="btn btn-secondary" onclick="irParaPagina('solicitar-acesso')">
+                    <button type="button" class="btn btn-secondary" onclick="irParaPagina('solicitar-acesso')">
                         📝 Solicitar Acesso
                     </button>
                 </div>
@@ -2058,6 +2074,9 @@ function renderizarDashboard() {
     } else if (usuario.papel === 'conferente') {
         return renderizarConferente();
     }
+
+    // Fallback seguro para papel inesperado (ex.: "user").
+    return renderizarFaturista();
 }
 
 // ========================================
