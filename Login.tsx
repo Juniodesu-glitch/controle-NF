@@ -35,7 +35,7 @@ export default function Login() {
 
           {/* Título */}
           <h1 className="text-3xl font-bold text-center text-foreground mb-2">
-            TMS System
+            System
           </h1>
           <p className="text-center text-muted-foreground mb-8">
             Sistema de Gestão de Faturamento e Expedição

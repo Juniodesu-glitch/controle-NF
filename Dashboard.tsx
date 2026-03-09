@@ -20,7 +20,7 @@ export default function Dashboard() {
       <header className="bg-card border-b border-border sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">TMS System</h1>
+            <h1 className="text-2xl font-bold text-foreground">System</h1>
             <p className="text-sm text-muted-foreground">Bem-vindo, {user?.name || "Usuário"}</p>
           </div>
           <Button

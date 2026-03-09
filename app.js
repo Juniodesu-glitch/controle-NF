@@ -2,6 +2,8 @@
 // SISTEMA TMS - GESTÃO DE FATURAMENTO E EXPEDIÇÃO
 // ========================================
 
+const APP_TITLE = 'System';
+
 // Estado global da aplicação
 const appState = {
     currentPage: 'login',
@@ -1938,7 +1940,7 @@ function renderizarLogin() {
             <div class="login-card">
                 <div class="login-header">
                     <div class="login-icon">📋</div>
-                    <h1 class="login-title">TMS System</h1>
+                    <h1 class="login-title">System</h1>
                     <p class="login-subtitle">Sistema de Gestão de Faturamento e Expedição</p>
                 </div>
 
@@ -2576,7 +2578,7 @@ function renderizar() {
         html = `
             <div class="header">
                 <div class="header-left">
-                    <h1 class="header-title">TMS System</h1>
+                    <h1 class="header-title">System</h1>
                     <p class="header-subtitle">Sistema de Gestão de Faturamento e Expedição</p>
                 </div>
             </div>
@@ -2586,7 +2588,7 @@ function renderizar() {
         html = `
             <div class="header">
                 <div class="header-left">
-                    <h1 class="header-title">TMS System</h1>
+                    <h1 class="header-title">System</h1>
                     <p class="header-subtitle">Sistema de Gestão de Faturamento e Expedição</p>
                 </div>
             </div>
@@ -2602,6 +2604,7 @@ function renderizar() {
 // ========================================
 
 document.addEventListener('DOMContentLoaded', async function() {
+    document.title = APP_TITLE;
     await inicializarDados();
     renderizar();
 });
