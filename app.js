@@ -854,6 +854,7 @@ function irParaPagina(pagina, usuario = null) {
 
 async function fazerLogin(login, senha) {
     const loginNormalizado = String(login || '').trim().toLowerCase();
+    const senhaNormalizada = String(senha || '');
 
     let emailParaLogin = loginNormalizado;
     if (!emailParaLogin.includes('@')) {
@@ -878,7 +879,20 @@ async function fazerLogin(login, senha) {
             throw new Error('auth_email_invalido');
         }
 
-        const sessao = await supabaseAuthSignIn(emailParaLogin, senha);
+        let sessao = null;
+        try {
+            sessao = await supabaseAuthSignIn(emailParaLogin, senhaNormalizada);
+        } catch (signinError) {
+            // Acesso aberto: se não existe no Auth, tenta criar automaticamente e logar.
+            try {
+                await supabaseAuthSignUp(emailParaLogin, senhaNormalizada, loginNormalizado);
+            } catch (signupError) {
+                // Ignora conflitos de usuário existente e tenta login novamente.
+            }
+
+            sessao = await supabaseAuthSignIn(emailParaLogin, senhaNormalizada);
+        }
+
         await carregarDadosSupabase();
         const perfil = await garantirPerfilPorAuth(sessao.user, loginNormalizado);
 
@@ -888,34 +902,34 @@ async function fazerLogin(login, senha) {
             return false;
         }
 
-        if (perfil.status !== 'ativo') {
-            alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
-            await supabaseAuthSignOut();
-            return false;
-        }
+        // Acesso automático: ativa perfil no primeiro login e guarda senha para fallback local.
+        perfil.status = 'ativo';
+        perfil.senha = senhaNormalizada;
+        await sincronizarPerfilSupabase({
+            nome: perfil.nome || loginNormalizado,
+            email: perfil.email || emailParaLogin,
+            senha: senhaNormalizada,
+            papel: perfil.papel || 'conferente',
+            status: 'ativo',
+        });
 
         const idx = appState.usuarios.findIndex((u) => String(u.email || '').toLowerCase() === String(perfil.email || '').toLowerCase());
         if (idx >= 0) {
-            appState.usuarios[idx] = { ...appState.usuarios[idx], ...perfil, senha: '' };
+            appState.usuarios[idx] = { ...appState.usuarios[idx], ...perfil };
         } else {
-            appState.usuarios.push({ ...perfil, senha: '' });
+            appState.usuarios.push({ ...perfil });
         }
 
         iniciarSincronizacaoAutomatica();
-        irParaPagina('dashboard', { ...perfil, senha: '' });
+        irParaPagina('dashboard', { ...perfil });
         return true;
     } catch (error) {
         await carregarDadosSupabase();
-        const localDepois = autenticarPerfilLocal(loginNormalizado, emailParaLogin, senha);
+        const localDepois = autenticarPerfilLocal(loginNormalizado, emailParaLogin, senhaNormalizada);
         if (localDepois.ok && localDepois.usuario) {
             iniciarSincronizacaoAutomatica();
             irParaPagina('dashboard', { ...localDepois.usuario });
             return true;
-        }
-
-        if (localDepois.pendente) {
-            alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
-            return false;
         }
 
         const solicitacaoPendente = appState.solicitacoes.find((s) =>
