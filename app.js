@@ -1612,19 +1612,122 @@ function exportarPlanilha(tipo) {
     alert('✅ Planilha exportada com sucesso!');
 }
 
-function gerarRelatorioExpedicaoExcel() {
+async function gerarRelatorioExpedicaoExcel() {
     if (appState.bipagensExpedicao.length === 0) {
         alert('❌ Nenhuma expedição registrada para gerar relatório!');
         return;
     }
 
-    const dataHoraGeracao = new Date().toLocaleString('pt-BR');
-    const cabecalho = ['NF Numero', 'Data Hora Geracao'];
-    const linhas = [cabecalho];
-
-    appState.bipagensExpedicao.forEach((bipagem) => {
-        linhas.push([String(bipagem.numeroNF), dataHoraGeracao]);
+    const numeroFormatter = new Intl.NumberFormat('pt-BR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
     });
+
+    const toNumber = (valor) => {
+        const n = Number(valor);
+        return Number.isFinite(n) ? n : 0;
+    };
+
+    const formatNumero = (valor) => numeroFormatter.format(toNumber(valor));
+
+    const normalizarNumeroNf = (valor) => String(valor || '').replace(/\D/g, '') || String(valor || '');
+
+    const derivarRes = (pedido) => {
+        const digitos = String(pedido || '').replace(/\D/g, '');
+        if (!digitos) return '';
+        return digitos.slice(-3);
+    };
+
+    // Enriquecimento com XML/Supabase para garantir o maximo de campos no layout final.
+    for (const bipagem of appState.bipagensExpedicao) {
+        const numeroNf = normalizarNumeroNf(bipagem.numeroNF);
+        if (!numeroNf) continue;
+
+        const precisaEnriquecer = !bipagem.artigo || !bipagem.pedido || !bipagem.transportadora || !toNumber(bipagem.pesoBruto) || !toNumber(bipagem.metros);
+        if (!precisaEnriquecer) continue;
+
+        let dadosNf = await buscarDadosNFNoSupabase(numeroNf);
+        if (!dadosNf) {
+            dadosNf = await buscarDadosNFNoXML(numeroNf);
+        }
+
+        if (!dadosNf || !dadosNf.encontrada) continue;
+
+        bipagem.artigo = dadosNf.artigo || bipagem.artigo || '-';
+        bipagem.pedido = dadosNf.pedido || bipagem.pedido || '-';
+        bipagem.transportadora = dadosNf.transportadora || bipagem.transportadora || '';
+        bipagem.quantidadeItens = Number(dadosNf.quantidadeItens ?? bipagem.quantidadeItens ?? 0);
+        bipagem.metros = Number(dadosNf.metros ?? bipagem.metros ?? 0);
+        bipagem.pesoBruto = Number(dadosNf.pesoBruto ?? bipagem.pesoBruto ?? 0);
+        bipagem.cliente = dadosNf.cliente || bipagem.cliente || '';
+    }
+
+    const linhasDados = appState.bipagensExpedicao.map((b) => {
+        const transportadora = String(b.transportadora || '').trim();
+        const pedido = String(b.pedido || '-');
+        return {
+            artigo: String(b.artigo || '-'),
+            pedido,
+            pesoBruto: toNumber(b.pesoBruto),
+            metros: toNumber(b.metros),
+            pcs: toNumber(b.quantidadeItens),
+            cliente: String(b.cliente || '-'),
+            nf: String(b.numeroNF || ''),
+            res: derivarRes(pedido),
+            transp: transportadora,
+        };
+    });
+
+    const transportadoras = Array.from(new Set(linhasDados.map((l) => l.transp).filter(Boolean)));
+    const transportadoraCabecalho = transportadoras.length === 1
+        ? transportadoras[0]
+        : transportadoras.length > 1
+            ? 'TRANSPORTADORAS DIVERSAS'
+            : 'NÃO INFORMADA';
+
+    const totalPeso = linhasDados.reduce((acc, l) => acc + l.pesoBruto, 0);
+    const totalMetros = linhasDados.reduce((acc, l) => acc + l.metros, 0);
+    const totalPcs = linhasDados.reduce((acc, l) => acc + l.pcs, 0);
+
+    const agora = new Date();
+    const data = agora.toLocaleDateString('pt-BR');
+    const hora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+    const linhas = [];
+    linhas.push(['', '', '', '', '', '', '', 'DATA:', `${data} HORA: ${hora}`]);
+    linhas.push(['', '', '', '', '', '', '', '', '']);
+    linhas.push(['CONTROLE DE CARREGAMENTO', '', '', '', '', '', '', '', '']);
+    linhas.push([transportadoraCabecalho, '', '', '', '', '', '', '', '']);
+    linhas.push(['ARTIGO', 'PEDIDO', 'P BRUTO', 'METROS', 'PÇS', 'CLIENTE', 'NF', 'RES', 'TRANSP']);
+
+    linhasDados.forEach((l) => {
+        linhas.push([
+            l.artigo,
+            l.pedido,
+            formatNumero(l.pesoBruto),
+            formatNumero(l.metros),
+            formatNumero(l.pcs),
+            l.cliente,
+            l.nf,
+            l.res,
+            l.transp,
+        ]);
+    });
+
+    linhas.push([
+        'TOTAL',
+        '',
+        formatNumero(totalPeso),
+        formatNumero(totalMetros),
+        formatNumero(totalPcs),
+        '',
+        '',
+        '',
+        '',
+    ]);
+    linhas.push(['PLACA', '____________________', '', '', '', 'CONFERENTE', '____________________', '', '']);
+    linhas.push(['ASSINATURA DO CONFERENTE', '____________________', '', '', '', '', '', '', '']);
+    linhas.push(['ASSINATURA DO MOTORISTA', '____________________', '', '', '', 'DOC RG', '____________________', '', '']);
 
     const escapar = (valor) => `"${String(valor ?? '').replace(/"/g, '""')}"`;
     const csv = '\uFEFF' + linhas.map((linha) => linha.map(escapar).join(';')).join('\r\n');
