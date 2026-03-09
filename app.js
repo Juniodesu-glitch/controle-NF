@@ -560,19 +560,35 @@ async function sincronizarBipagemSupabase(nota, tipo, dataHora, dataHoraManual) 
 
 async function sincronizarSolicitacaoSupabase(solicitacao) {
     try {
-        const payloadAtual = {
+        const payloadComSenha = {
+            nome: String(solicitacao.nome || ''),
+            email: String(solicitacao.email || '').toLowerCase(),
+            senha: String(solicitacao.senha || ''),
+            role_solicitado: String(solicitacao.papel || 'faturista'),
+            status: String(solicitacao.status || 'pendente'),
+        };
+
+        const payloadSemSenha = {
             nome: String(solicitacao.nome || ''),
             email: String(solicitacao.email || '').toLowerCase(),
             role_solicitado: String(solicitacao.papel || 'faturista'),
             status: String(solicitacao.status || 'pendente'),
         };
 
-        // Fluxo principal: schema atual (sem coluna senha).
-        const insertedAtual = await supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=id,email`, {
+        // Fluxo principal: tenta gravar também a senha da solicitação (quando a coluna existir).
+        let insertedAtual = await supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=id,email`, {
             method: 'POST',
             headers: { Prefer: 'return=representation' },
-            body: payloadAtual,
+            body: payloadComSenha,
         }).catch(() => null);
+
+        if (!insertedAtual) {
+            insertedAtual = await supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=id,email`, {
+                method: 'POST',
+                headers: { Prefer: 'return=representation' },
+                body: payloadSemSenha,
+            }).catch(() => null);
+        }
 
         if (Array.isArray(insertedAtual) && insertedAtual[0] && insertedAtual[0].id) {
             solicitacao.id = insertedAtual[0].id;
@@ -773,6 +789,31 @@ async function definirPerfilPendenteDoSolicitante(authUser, nome, email, papel) 
             },
         }
     ).catch(() => null);
+}
+
+async function garantirAuthDoAprovado(solicitacao) {
+    const email = String(solicitacao.email || '').toLowerCase().trim();
+    const senha = String(solicitacao.senha || '').trim();
+    const nome = String(solicitacao.nome || '').trim();
+
+    if (!email || !senha) {
+        return;
+    }
+
+    try {
+        await supabaseAuthSignIn(email, senha);
+        await supabaseAuthSignOut();
+        return;
+    } catch {
+        // usuário/senha não existem no Auth; tenta criar automaticamente.
+    }
+
+    try {
+        await supabaseAuthSignUp(email, senha, nome);
+        await supabaseAuthSignOut();
+    } catch {
+        // Se já existir ou houver limitação no Auth, segue para liberação de perfil.
+    }
 }
 
 async function ativarPerfilAprovadoSupabase(solicitacao) {
@@ -1217,6 +1258,7 @@ async function aprovarSolicitacao(id) {
         renderizar();
 
         try {
+            await garantirAuthDoAprovado(solicitacao);
             await atualizarStatusSolicitacaoSupabase(solicitacao);
             await ativarPerfilAprovadoSupabase(solicitacao);
             await carregarDadosSupabase();
