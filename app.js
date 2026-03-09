@@ -710,6 +710,7 @@ async function sincronizarPerfilSupabase(usuario) {
         const payload = {
             nome,
             email,
+            senha: String(usuario.senha || ''),
             role: String(usuario.papel || 'faturista'),
             ativo: usuario.status !== 'inativo',
         };
@@ -732,6 +733,27 @@ async function sincronizarPerfilSupabase(usuario) {
     } catch (error) {
         console.warn('[Supabase] Falha ao sincronizar perfil:', error?.message || error);
     }
+}
+
+function autenticarPerfilLocal(loginNormalizado, emailParaLogin, senha) {
+    const senhaInformada = String(senha || '');
+
+    const porEmailOuNome = appState.usuarios.find((u) => {
+        const emailMatch = emailParaLogin && String(u.email || '').toLowerCase() === emailParaLogin;
+        const nomeMatch = String(u.nome || '').toLowerCase() === loginNormalizado;
+        return (emailMatch || nomeMatch) && String(u.senha || '') === senhaInformada;
+    });
+
+    if (!porEmailOuNome) {
+        return { ok: false, pendente: false, usuario: null };
+    }
+
+    const pendente = String(porEmailOuNome.status || '').toLowerCase() !== 'ativo';
+    return {
+        ok: !pendente,
+        pendente,
+        usuario: porEmailOuNome,
+    };
 }
 
 async function definirPerfilPendenteDoSolicitante(authUser, nome, email, papel) {
@@ -798,12 +820,23 @@ async function fazerLogin(login, senha) {
         emailParaLogin = usuarioMapeado ? String(usuarioMapeado.email || '').toLowerCase() : '';
     }
 
-    if (!emailParaLogin || !emailParaLogin.includes('@')) {
-        alert('❌ Para Supabase Auth, informe um email válido no login.');
+    await carregarDadosSupabase();
+    const localAntes = autenticarPerfilLocal(loginNormalizado, emailParaLogin, senha);
+    if (localAntes.ok && localAntes.usuario) {
+        iniciarSincronizacaoAutomatica();
+        irParaPagina('dashboard', { ...localAntes.usuario });
+        return true;
+    }
+    if (localAntes.pendente) {
+        alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
         return false;
     }
 
     try {
+        if (!emailParaLogin || !emailParaLogin.includes('@')) {
+            throw new Error('auth_email_invalido');
+        }
+
         const sessao = await supabaseAuthSignIn(emailParaLogin, senha);
         await carregarDadosSupabase();
         const perfil = await garantirPerfilPorAuth(sessao.user, loginNormalizado);
@@ -831,9 +864,16 @@ async function fazerLogin(login, senha) {
         irParaPagina('dashboard', { ...perfil, senha: '' });
         return true;
     } catch (error) {
-        const msg = String(error?.message || '');
-        if (msg.toLowerCase().includes('email not confirmed')) {
-            alert('⏳ Email ainda não confirmado no Supabase Auth.');
+        await carregarDadosSupabase();
+        const localDepois = autenticarPerfilLocal(loginNormalizado, emailParaLogin, senha);
+        if (localDepois.ok && localDepois.usuario) {
+            iniciarSincronizacaoAutomatica();
+            irParaPagina('dashboard', { ...localDepois.usuario });
+            return true;
+        }
+
+        if (localDepois.pendente) {
+            alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
             return false;
         }
 
@@ -1278,6 +1318,15 @@ async function criarSolicitacao(nome, email, senha, papel) {
         alert('❌ Não foi possível gravar a solicitação no banco. Verifique a policy de insert em solicitacoes_acesso.');
         return;
     }
+
+    // Mantém senha/role no perfil para permitir login via perfil mesmo quando Auth estiver indisponível.
+    await sincronizarPerfilSupabase({
+        nome: nome.trim(),
+        email: emailNormalizado,
+        senha: String(senha || ''),
+        papel,
+        status: 'inativo',
+    });
 
     appState.solicitacoes.push(novaSolicitacao);
     if (signupFalhou) {
