@@ -680,6 +680,11 @@ async function atualizarStatusSolicitacaoSupabase(solicitacao) {
             return;
         }
 
+        // Para aprovacao, evita apagar a solicitacao: ela funciona como trilha/auditoria e fallback de login.
+        if (statusFinal === 'aprovada') {
+            return;
+        }
+
         // Fallback robusto: remove solicitações pendentes processadas quando UPDATE não é suportado no schema/policy atual.
         if (solicitacao.id) {
             await supabaseRequest(
@@ -803,6 +808,35 @@ function autenticarSolicitacaoAprovada(loginNormalizado, emailParaLogin, senha) 
             status: 'ativo',
         },
     };
+}
+
+async function buscarSolicitacaoAprovadaNoSupabase(loginNormalizado, emailParaLogin) {
+    const email = String(emailParaLogin || '').toLowerCase().trim();
+    const nome = String(loginNormalizado || '').toLowerCase().trim();
+
+    try {
+        if (email) {
+            const porEmail = await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?select=*&email=eq.${encodeURIComponent(email)}&status=eq.aprovada&order=id.desc&limit=1`
+            ).catch(() => []);
+            if (Array.isArray(porEmail) && porEmail.length > 0) {
+                return mapSolicitacaoRowToLocal(porEmail[0]);
+            }
+        }
+
+        if (nome) {
+            const porNome = await supabaseRequest(
+                `${supabaseConfig.tables.solicitacoes}?select=*&nome=eq.${encodeURIComponent(nome)}&status=eq.aprovada&order=id.desc&limit=1`
+            ).catch(() => []);
+            if (Array.isArray(porNome) && porNome.length > 0) {
+                return mapSolicitacaoRowToLocal(porNome[0]);
+            }
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
 }
 
 async function definirPerfilPendenteDoSolicitante(authUser, nome, email, papel) {
@@ -965,7 +999,23 @@ async function fazerLogin(login, senha) {
             return true;
         }
 
-        const aprovado = autenticarSolicitacaoAprovada(loginNormalizado, emailParaLogin, senhaNormalizada);
+        let aprovado = autenticarSolicitacaoAprovada(loginNormalizado, emailParaLogin, senhaNormalizada);
+        if (!aprovado.ok) {
+            const aprovadoSupabase = await buscarSolicitacaoAprovadaNoSupabase(loginNormalizado, emailParaLogin);
+            if (aprovadoSupabase) {
+                aprovado = autenticarSolicitacaoAprovada(
+                    loginNormalizado,
+                    String(aprovadoSupabase.email || emailParaLogin || '').toLowerCase(),
+                    senhaNormalizada,
+                );
+
+                if (aprovado.ok && aprovado.usuario) {
+                    aprovado.usuario.nome = aprovadoSupabase.nome || aprovado.usuario.nome;
+                    aprovado.usuario.papel = aprovadoSupabase.papel || aprovado.usuario.papel;
+                }
+            }
+        }
+
         if (aprovado.ok && aprovado.usuario) {
             const idx = appState.usuarios.findIndex((u) => String(u.email || '').toLowerCase() === String(aprovado.usuario.email || '').toLowerCase());
             if (idx >= 0) {
@@ -995,6 +1045,16 @@ async function fazerLogin(login, senha) {
 
         if (solicitacaoPendente) {
             alert('⏳ Seu acesso ainda está pendente de aprovação do admin.');
+            return false;
+        }
+
+        const erroAuth = String(error?.message || '').toLowerCase();
+        if (erroAuth.includes('email not confirmed')) {
+            alert('❌ Seu usuário foi criado no Auth, mas o email ainda não foi confirmado no Supabase.');
+            return false;
+        }
+        if (erroAuth.includes('signups not allowed') || erroAuth.includes('signup is disabled')) {
+            alert('❌ O Supabase Auth está com cadastro por email desativado. Ative Email/Password em Authentication > Providers.');
             return false;
         }
 
@@ -1321,10 +1381,9 @@ async function aprovarSolicitacao(id) {
         solicitacao.status = 'aprovada';
         const emailNormalizado = String(solicitacao.email || '').toLowerCase().trim();
         appState.solicitacoes = appState.solicitacoes.filter(s => {
-            const mesmoId = String(s.id) === String(id);
             const mesmoEmailPendente = String(s.email || '').toLowerCase().trim() === emailNormalizado
                 && String(s.status || '').trim().toLowerCase() === 'pendente';
-            return !(mesmoId || mesmoEmailPendente);
+            return !mesmoEmailPendente;
         });
         renderizar();
 
