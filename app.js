@@ -75,6 +75,10 @@ appState.sync = {
     emAndamento: false,
 };
 
+appState.filtros = {
+    transportadoraFaturista: '',
+};
+
 async function sincronizarDadosEmSegundoPlano() {
     if (!appState.currentUser || appState.sync.emAndamento) return;
 
@@ -2434,11 +2438,196 @@ function renderizarRelatorios() {
     `;
 }
 
+function getTransportadorasFaturistaDisponiveis() {
+    const transportadoras = appState.notasFiscais
+        .filter((nf) => {
+            const status = String(nf.status || '').trim().toLowerCase();
+            return status !== 'expedida' && status !== 'entregue';
+        })
+        .map((nf) => String(nf.transportadora || '').trim())
+        .filter(Boolean);
+
+    return Array.from(new Set(transportadoras)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function setFiltroTransportadoraFaturista(valor) {
+    appState.filtros.transportadoraFaturista = String(valor || '').trim();
+    renderizar();
+}
+
+async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
+    const toNumber = (valor) => {
+        const n = Number(valor);
+        return Number.isFinite(n) ? n : 0;
+    };
+
+    const normalizarNumeroNf = (valor) => String(valor || '').replace(/\D/g, '') || String(valor || '');
+    const normalizarTexto = (valor) => String(valor || '').trim().toLowerCase();
+    const derivarRes = (pedido) => {
+        const digitos = String(pedido || '').replace(/\D/g, '');
+        return digitos ? digitos.slice(-3) : '';
+    };
+
+    const notasCandidatas = appState.notasFiscais.filter((nf) => {
+        const status = String(nf.status || '').trim().toLowerCase();
+        return status !== 'expedida' && status !== 'entregue';
+    });
+
+    const linhas = [];
+
+    for (const nota of notasCandidatas) {
+        const numeroNf = normalizarNumeroNf(nota.numero);
+
+        let dadosNf = null;
+        if (numeroNf) {
+            dadosNf = await buscarDadosNFNoSupabase(numeroNf);
+            if (!dadosNf) {
+                dadosNf = await buscarDadosNFNoXML(numeroNf);
+            }
+        }
+
+        const artigo = String(dadosNf?.artigo ?? nota.artigo ?? '-');
+        const pedido = String(dadosNf?.pedido ?? nota.pedido ?? '-');
+        const pesoBruto = toNumber(dadosNf?.pesoBruto ?? nota.pesoBruto ?? 0);
+        const metros = toNumber(dadosNf?.metros ?? nota.metros ?? 0);
+        const pcs = toNumber(dadosNf?.quantidadeItens ?? nota.quantidadeItens ?? 0);
+        const cliente = String(dadosNf?.cliente ?? nota.cliente ?? '-');
+        const transportadora = String(dadosNf?.transportadora ?? nota.transportadora ?? '').trim();
+        const dataNfRaw = String(dadosNf?.dataEmissao ?? nota.dataEmissao ?? '');
+
+        if (!transportadora) {
+            continue;
+        }
+
+        if (transportadoraFiltro && normalizarTexto(transportadora) !== normalizarTexto(transportadoraFiltro)) {
+            continue;
+        }
+
+        const dataOrdenacao = new Date(dataNfRaw);
+        const ts = Number.isFinite(dataOrdenacao.getTime()) ? dataOrdenacao.getTime() : Number.MAX_SAFE_INTEGER;
+
+        linhas.push({
+            artigo,
+            pedido,
+            pesoBruto,
+            metros,
+            pcs,
+            cliente,
+            nf: String(nota.numero || numeroNf || '-'),
+            res: derivarRes(pedido),
+            transp: transportadora,
+            dataNf: dataNfRaw,
+            ordemTs: ts,
+        });
+    }
+
+    linhas.sort((a, b) => {
+        if (a.ordemTs !== b.ordemTs) return a.ordemTs - b.ordemTs;
+        return String(a.nf).localeCompare(String(b.nf), 'pt-BR', { numeric: true });
+    });
+
+    return linhas;
+}
+
+async function gerarPlanilhaFaturistaExcel() {
+    const transportadoraFiltro = String(appState.filtros.transportadoraFaturista || '').trim();
+    if (!transportadoraFiltro) {
+        alert('❌ Selecione uma transportadora para exportar.');
+        return;
+    }
+
+    const linhas = await montarLinhasExportacaoFaturista(transportadoraFiltro);
+    if (linhas.length === 0) {
+        alert('❌ Nenhuma NF disponível para a transportadora selecionada.');
+        return;
+    }
+
+    const numeroFormatter = new Intl.NumberFormat('pt-BR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+    const formatNumero = (valor) => numeroFormatter.format(Number(valor || 0));
+
+    const formatData = (valor) => {
+        const dt = new Date(String(valor || ''));
+        if (!Number.isFinite(dt.getTime())) return String(valor || '');
+        return dt.toLocaleDateString('pt-BR');
+    };
+
+    const escapeHtml = (valor) => String(valor ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const linhasHtml = linhas.map((l) => `
+        <tr>
+            <td>${escapeHtml(l.artigo)}</td>
+            <td>${escapeHtml(l.pedido)}</td>
+            <td style="text-align:right">${escapeHtml(formatNumero(l.pesoBruto))}</td>
+            <td style="text-align:right">${escapeHtml(formatNumero(l.metros))}</td>
+            <td style="text-align:right">${escapeHtml(formatNumero(l.pcs))}</td>
+            <td>${escapeHtml(l.cliente)}</td>
+            <td style="text-align:center">${escapeHtml(l.nf)}</td>
+            <td style="text-align:center">${escapeHtml(l.res)}</td>
+            <td>${escapeHtml(l.transp)}</td>
+            <td style="text-align:center">${escapeHtml(formatData(l.dataNf))}</td>
+        </tr>
+    `).join('');
+
+    const htmlExcel = `
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <style>
+        table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
+        th, td { border: 1px solid #000; padding: 5px 6px; font-size: 12px; }
+        th { background: #efefef; font-weight: 700; text-align: center; }
+        .titulo { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+        .sub { margin-bottom: 10px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="titulo">PLANILHA DE FATURAMENTO - FIFO POR DATA DA NF</div>
+    <div class="sub">Transportadora: ${escapeHtml(transportadoraFiltro)} | Gerado em: ${escapeHtml(new Date().toLocaleString('pt-BR'))}</div>
+    <table>
+        <tr>
+            <th>Artigo</th>
+            <th>Pedido</th>
+            <th>Peso Bruto</th>
+            <th>Metros</th>
+            <th>PÇS</th>
+            <th>Cliente</th>
+            <th>NF</th>
+            <th>Res</th>
+            <th>Trans</th>
+            <th>Data NF</th>
+        </tr>
+        ${linhasHtml}
+    </table>
+</body>
+</html>`;
+
+    const blob = new Blob(['\uFEFF', htmlExcel], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `faturamento_${transportadoraFiltro.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.xls`;
+    link.click();
+
+    alert('✅ Planilha do faturista exportada com sucesso!');
+}
+
 // ========================================
 // INTERFACE DO FATURISTA
 // ========================================
 
 function renderizarFaturista() {
+    const transportadorasDisponiveis = getTransportadorasFaturistaDisponiveis();
+    if (appState.filtros.transportadoraFaturista && !transportadorasDisponiveis.includes(appState.filtros.transportadoraFaturista)) {
+        appState.filtros.transportadoraFaturista = '';
+    }
+
     return `
         <div class="dashboard-container">
             <div class="dashboard-content">
@@ -2455,6 +2644,28 @@ function renderizarFaturista() {
                             🚪 Sair
                         </button>
                     </div>
+                </div>
+
+                <div class="bipagem-card" style="margin-bottom: 16px;">
+                    <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+                        <div style="min-width:280px; flex:1;">
+                            <label class="form-label">Filtrar por Transportadora</label>
+                            <select
+                                class="form-select"
+                                onchange="setFiltroTransportadoraFaturista(this.value)"
+                                style="width:100%;"
+                            >
+                                <option value="" ${appState.filtros.transportadoraFaturista ? '' : 'selected'}>Selecione a transportadora</option>
+                                ${transportadorasDisponiveis.map((t) => `<option value="${t}" ${appState.filtros.transportadoraFaturista === t ? 'selected' : ''}>${t}</option>`).join('')}
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" style="min-height:44px;" onclick="gerarPlanilhaFaturistaExcel()">
+                            📊 Exportar Planilha Faturista
+                        </button>
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 12px; margin-top: 10px;">
+                        A exportação segue FIFO pela Data NF (mais antiga para mais nova) e não remove NFs não bipadas na expedição.
+                    </p>
                 </div>
 
                 <div class="bipagem-container">
