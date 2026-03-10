@@ -371,6 +371,7 @@ function mapNfRowToLocal(row) {
         valor: String(row.valor_total ?? '0.00'),
         status: row.status || 'pendente',
         dataEmissao: row.data_emissao || new Date().toISOString().slice(0, 10),
+        origemXml: row.origem_xml || '',
     };
 }
 
@@ -1235,6 +1236,7 @@ function criarNotaAPartirDaLeitura(numeroNFExtraido) {
         valor: '0.00',
         status: 'pendente',
         dataEmissao: hoje,
+        origemXml: '',
     };
     appState.notasFiscais.push(novaNota);
     return novaNota;
@@ -1260,6 +1262,10 @@ function aplicarDadosXMLNaNota(nota, dadosXML) {
 
     if (dadosXML.dataEmissao) {
         nota.dataEmissao = dadosXML.dataEmissao;
+    }
+
+    if (dadosXML.origemXml || dadosXML.arquivo) {
+        nota.origemXml = String(dadosXML.origemXml || dadosXML.arquivo || '').trim();
     }
 }
 
@@ -1289,6 +1295,7 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             pesoBruto: row.peso_bruto,
             valorTotal: row.valor_total,
             dataEmissao: row.data_emissao,
+            origemXml: row.origem_xml || '',
         };
     } catch (error) {
         console.warn('[Supabase] Falha ao buscar NF por numero:', error?.message || error);
@@ -2582,6 +2589,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
             transp: transportadora,
             dataNf: dataNfRaw,
             ordemTs: ts,
+            origemXml: String(nota.origemXml || ''),
         });
     }
 
@@ -2640,6 +2648,10 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
 }
 
 async function gerarPlanilhaFaturistaExcel() {
+    // Sincroniza imediatamente antes da exportacao para refletir novas NFs do banco central.
+    await carregarDadosSupabase().catch(() => null);
+    await atualizarTransportadorasFaturistaDoXml(true).catch(() => null);
+
     const transportadoraFiltro = String(appState.filtros.transportadoraFaturista || '').trim();
     if (!transportadoraFiltro) {
         alert('❌ Selecione uma transportadora para exportar.');
@@ -2650,6 +2662,23 @@ async function gerarPlanilhaFaturistaExcel() {
     if (linhas.length === 0) {
         alert('❌ Nenhuma NF disponível para a transportadora selecionada.');
         return;
+    }
+
+    const nfsSemXml = Array.from(new Set(
+        linhas
+            .filter((l) => !String(l.origemXml || '').trim())
+            .map((l) => String(l.nf || '').trim())
+            .filter(Boolean)
+    ));
+
+    if (nfsSemXml.length > 0) {
+        const preview = nfsSemXml.slice(0, 10).join(', ');
+        const sufixo = nfsSemXml.length > 10 ? ` e mais ${nfsSemXml.length - 10}` : '';
+        alert(
+            `⚠️ Atenção: ${nfsSemXml.length} NF(s) deste filtro ainda não foram importadas da pasta nf-app para o banco.\n` +
+            `NFs: ${preview}${sufixo}.\n\n` +
+            'A planilha será gerada mesmo assim. Assim que o importador Python processar os XMLs, todas as máquinas verão os dados completos.'
+        );
     }
 
     const numeroFormatter = new Intl.NumberFormat('pt-BR', {
