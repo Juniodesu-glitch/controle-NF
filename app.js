@@ -2556,6 +2556,11 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
 
     const normalizarNumeroNf = (valor) => String(valor || '').replace(/\D/g, '') || String(valor || '');
     const normalizarTexto = (valor) => String(valor || '').trim().toLowerCase();
+    const valorAusente = (valor, placeholders = []) => {
+        const normalizado = normalizarTexto(valor);
+        if (!normalizado) return true;
+        return placeholders.some((p) => normalizado === normalizarTexto(p));
+    };
     const derivarRes = (pedido) => {
         const digitos = String(pedido || '').replace(/\D/g, '');
         return digitos ? digitos.slice(-3) : '';
@@ -2631,7 +2636,11 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
         let dataNfRaw = String(nota.dataEmissao ?? '');
 
         // Fallback opcional para XML local apenas quando o banco nao tiver dados completos.
-        const faltaCampos = !transportadora || !dataNfRaw || !pedido || !artigo;
+        const faltaTransportadora = valorAusente(transportadora, ['não informada', 'nao informada', '-']);
+        const faltaPedido = valorAusente(pedido, ['-']);
+        const faltaArtigo = valorAusente(artigo, ['-']);
+        const faltaData = !String(dataNfRaw || '').trim();
+        const faltaCampos = faltaTransportadora || faltaData || faltaPedido || faltaArtigo;
         if (incluirFallbackXml && faltaCampos && numeroNf) {
             const dadosNf = await buscarDadosNFNoXML(numeroNf);
             if (dadosNf && dadosNf.encontrada) {
