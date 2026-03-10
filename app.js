@@ -11,6 +11,7 @@ const appState = {
     notasFiscais: [],
     bipagensFaturamento: [],
     bipagensExpedicao: [],
+    ultimaBipagemFaturista: null,
     solicitacoes: [],
     usuarios: [],
     xmlApiBaseUrls: ['http://127.0.0.1:8788', 'http://localhost:8788', 'http://127.0.0.1:8787', 'http://localhost:8787'],
@@ -3123,6 +3124,7 @@ function renderizarFaturista() {
     }
 
     const nfsPendentes = obterNfsFaturistaPendentes();
+    const ultimaBipagem = appState.ultimaBipagemFaturista;
 
     const escH = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const fmtNum = (v) => {
@@ -3141,6 +3143,35 @@ function renderizarFaturista() {
         if (!Number.isFinite(dt.getTime())) return s;
         return dt.toLocaleDateString('pt-BR');
     };
+
+    const ultimaBipagemHtml = !ultimaBipagem ? '' : `
+        <div class="bipagem-card" style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.35);margin-bottom:16px;">
+            <div style="display:flex;gap:12px;align-items:flex-start;">
+                <div style="font-size:28px;line-height:1;">✅</div>
+                <div style="flex:1;">
+                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+                        <div>
+                            <h3 style="margin:0 0 8px;color:#4ade80;">NF faturada com sucesso</h3>
+                            <p style="margin:0;color:var(--text-secondary);font-size:12px;">A NF agora está disponível online no fluxo do aplicativo.</p>
+                        </div>
+                        <button class="btn btn-secondary" style="min-height:34px;padding:6px 10px;" onclick="appState.ultimaBipagemFaturista=null;renderizar()">Fechar</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 16px;margin-top:12px;font-size:13px;">
+                        <div><span style="color:var(--text-secondary);">NF:</span> <strong style="color:#fff200;">${escH(ultimaBipagem.numero)}</strong></div>
+                        <div><span style="color:var(--text-secondary);">Cliente:</span> ${escH(ultimaBipagem.cliente)}</div>
+                        <div><span style="color:var(--text-secondary);">Transportadora:</span> ${escH(ultimaBipagem.transportadora)}</div>
+                        <div><span style="color:var(--text-secondary);">Artigo:</span> ${escH(ultimaBipagem.artigo)}</div>
+                        <div><span style="color:var(--text-secondary);">Pedido:</span> ${escH(ultimaBipagem.pedido)}</div>
+                        <div><span style="color:var(--text-secondary);">Data NF:</span> ${escH(fmtData(ultimaBipagem.dataEmissao))}</div>
+                        <div><span style="color:var(--text-secondary);">Metros:</span> ${fmtNum(ultimaBipagem.metros)}</div>
+                        <div><span style="color:var(--text-secondary);">Peças:</span> ${fmtNum(ultimaBipagem.quantidadeItens)}</div>
+                        <div><span style="color:var(--text-secondary);">Peso:</span> ${fmtNum(ultimaBipagem.pesoBruto)} kg</div>
+                        <div><span style="color:var(--text-secondary);">Valor:</span> R$ ${fmtNum(ultimaBipagem.valor)}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
 
     const linhasTabela = nfsPendentes.length === 0
         ? `<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-secondary);">
@@ -3176,6 +3207,53 @@ function renderizarFaturista() {
                         <button class="btn btn-secondary" onclick="fazerLogout()">🚪 Sair</button>
                     </div>
                 </div>
+
+                <div class="bipagem-card" style="margin-bottom:16px;">
+                    <div class="bipagem-header">
+                        <div class="bipagem-icon">📊</div>
+                        <h2 class="bipagem-title">Bipar Nota Fiscal Faturada</h2>
+                    </div>
+
+                    <div class="bipagem-input-group">
+                        <label class="form-label">Código de Barras / Número da NF</label>
+                        <input
+                            type="text"
+                            class="bipagem-input"
+                            id="codigoBarras"
+                            placeholder="Escaneie o código de barras ou digite o número da NF"
+                            oninput="agendarBipagemAutomatica('faturamento')"
+                            onkeydown="if(event.key==='Enter'){event.preventDefault();handleBiparFaturamento();}"
+                            autofocus
+                        >
+                    </div>
+
+                    <div class="checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" class="checkbox-input" id="usarDataManual" onchange="toggleDataManual()">
+                            Usar data e hora manual
+                        </label>
+
+                        <div id="dataManualGroup" style="display: none; margin-top: 12px;">
+                            <label class="form-label">Data e Hora</label>
+                            <input type="datetime-local" class="datetime-input" id="dataHora">
+                        </div>
+
+                        <div id="dataAutomaticaGroup" style="margin-top: 12px; color: var(--text-secondary); font-size: 12px;">
+                            🕐 Usando data e hora do sistema
+                        </div>
+                    </div>
+
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                        <button class="btn btn-primary" style="min-height:48px;" onclick="handleBiparFaturamento()">
+                            📊 Confirmar Faturamento
+                        </button>
+                        <span style="color:var(--text-secondary);font-size:12px;">
+                            Ao bipar, a NF é marcada como faturada, enriquecida com os dados disponíveis e publicada no app.
+                        </span>
+                    </div>
+                </div>
+
+                ${ultimaBipagemHtml}
 
                 <!-- Filtro de transportadora + botões de ação -->
                 <div class="bipagem-card" style="margin-bottom: 16px;">
@@ -3267,7 +3345,8 @@ function toggleDataManual() {
 }
 
 async function handleBiparFaturamento() {
-    const codigoBarras = document.getElementById('codigoBarras').value;
+    const input = document.getElementById('codigoBarras');
+    const codigoBarras = input ? input.value.trim() : '';
     const numeroExtraido = extrairNumeroNF(codigoBarras);
     const usarDataManual = document.getElementById('usarDataManual').checked;
     const dataHora = usarDataManual ? document.getElementById('dataHora').value : new Date().toLocaleString('pt-BR');
@@ -3277,23 +3356,44 @@ async function handleBiparFaturamento() {
         return;
     }
 
-    let dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
-    if (!dadosNF) {
-        dadosNF = await buscarDadosNFNoXML(numeroExtraido);
+    let dadosNF = await buscarDadosNFNoXML(numeroExtraido);
+    if (!dadosNF || !dadosNF.encontrada) {
+        dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
     }
 
+    let resultado = buscarNotaPorCodigo(numeroExtraido);
+    let nota = resultado ? resultado.nota : criarNotaAPartirDaLeitura(numeroExtraido);
+
     if (dadosNF && dadosNF.encontrada) {
-        let resultado = buscarNotaPorCodigo(numeroExtraido);
-        let nota = resultado ? resultado.nota : null;
-        if (!nota) {
-            nota = criarNotaAPartirDaLeitura(numeroExtraido);
-        }
         aplicarDadosXMLNaNota(nota, dadosNF);
+        await sincronizarNfSupabase(nota).catch(() => null);
     }
 
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
-        document.getElementById('codigoBarras').value = '';
+        await sincronizarNfSupabase(nota).catch(() => null);
+        appState.ultimaBipagemFaturista = {
+            numero: nota.numero,
+            cliente: nota.cliente,
+            transportadora: nota.transportadora,
+            artigo: nota.artigo,
+            pedido: nota.pedido,
+            quantidadeItens: nota.quantidadeItens,
+            metros: nota.metros,
+            pesoBruto: nota.pesoBruto,
+            valor: nota.valor,
+            dataEmissao: nota.dataEmissao,
+        };
+        await carregarDadosSupabase().catch(() => null);
+        if (input) {
+            input.value = '';
+        }
         renderizar();
+        setTimeout(() => {
+            const novoInput = document.getElementById('codigoBarras');
+            if (novoInput) {
+                novoInput.focus();
+            }
+        }, 120);
     }
 }
 
