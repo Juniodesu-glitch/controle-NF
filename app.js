@@ -2604,15 +2604,21 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
     const notasCandidatas = appState.notasFiscais.filter((nf) => {
         const numero = normalizarNumeroNf(nf.numero);
         if (!numero) return false;
-
-        // Regra sistemica: considera todas as NFs nao expedidas para o filtro por transportadora.
-        const status = String(nf.status || '').trim().toLowerCase();
-        return status !== 'expedida' && status !== 'entregue';
+        // Regra de exportacao: considera todas as NFs conhecidas e filtra pela transportadora selecionada.
+        return true;
     });
+
+    const nfsXmlPorNumero = new Map();
 
     if (incluirFallbackXml) {
         const nfsXml = await buscarNfsNoXML();
         if (Array.isArray(nfsXml) && nfsXml.length > 0) {
+            for (const row of nfsXml) {
+                const numero = normalizarNumeroNf(row?.numeroNF || row?.numero_nf || row?.numero);
+                if (!numero) continue;
+                nfsXmlPorNumero.set(numero, row);
+            }
+
             const existentes = new Set(notasCandidatas.map((n) => normalizarNumeroNf(n.numero)));
 
             for (const row of nfsXml) {
@@ -2644,6 +2650,25 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
 
     for (const nota of notasCandidatas) {
         const numeroNf = normalizarNumeroNf(nota.numero);
+
+        // Quando disponivel, prioriza os dados do XML para corrigir campos stale da base local.
+        const snapshotXml = nfsXmlPorNumero.get(numeroNf);
+        if (snapshotXml) {
+            aplicarDadosXMLNaNota(nota, {
+                encontrada: true,
+                numeroNF: numeroNf,
+                cliente: snapshotXml?.cliente,
+                transportadora: snapshotXml?.transportadora,
+                artigo: snapshotXml?.artigo,
+                pedido: snapshotXml?.pedido,
+                quantidadeItens: snapshotXml?.quantidadeItens ?? snapshotXml?.quantidade_itens,
+                metros: snapshotXml?.metros,
+                pesoBruto: snapshotXml?.pesoBruto ?? snapshotXml?.peso_bruto,
+                valorTotal: snapshotXml?.valorTotal ?? snapshotXml?.valor_total,
+                dataEmissao: snapshotXml?.dataEmissao ?? snapshotXml?.data_emissao,
+                origemXml: snapshotXml?.origemXml || snapshotXml?.arquivo,
+            });
+        }
 
         // Fonte principal para multi-maquinas: dados sincronizados no Supabase (appState.notasFiscais).
         let artigo = String(nota.artigo ?? '-');
