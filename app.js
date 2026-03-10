@@ -89,7 +89,7 @@ appState.cache = {
 appState.xmlSync = {
     emAndamento: false,
     ultimoSyncEm: 0,
-    intervaloMinMs: 120000,
+    intervaloMinMs: 30000,
 };
 
 async function sincronizarDadosEmSegundoPlano() {
@@ -1422,7 +1422,7 @@ async function buscarNfsNoXML() {
 
     for (const baseUrl of endpoints) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
 
         try {
             const response = await fetch(`${baseUrl}/api/nfs`, {
@@ -2834,18 +2834,34 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
 async function atualizarTransportadorasFaturistaDoXml(force = false) {
     if (appState.cache.carregandoTransportadorasFaturista) return;
 
+    // Mantem o app sincronizado com novos XMLs mesmo quando o cache de transportadoras ainda e valido.
+    await sincronizarNfsXmlNoFluxo(force).catch(() => null);
+
     const agora = Date.now();
     const cacheAindaValido = (agora - appState.cache.transportadorasFaturistaAtualizadoEm) < 120000;
     // Respeita o TTL mesmo quando nao houver transportadoras, para evitar loop de loading.
     if (!force && cacheAindaValido) {
+        const transportadorasLocais = Array.from(new Set(
+            appState.notasFiscais
+                .map((nf) => String(nf?.transportadora || '').trim())
+                .filter((t) => t && t.toLowerCase() !== 'não informada' && t.toLowerCase() !== 'nao informada')
+        )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+        if (transportadorasLocais.length > appState.cache.transportadorasFaturistaXml.length) {
+            appState.cache.transportadorasFaturistaXml = transportadorasLocais;
+            if (
+                appState.currentPage === 'dashboard' &&
+                appState.currentUser &&
+                appState.currentUser.papel === 'faturista'
+            ) {
+                renderizar();
+            }
+        }
         return;
     }
 
     appState.cache.carregandoTransportadorasFaturista = true;
     try {
-        // Primeiro sincroniza XML para o banco para garantir que o faturista veja as NFs novas da pasta.
-        await sincronizarNfsXmlNoFluxo(force).catch(() => null);
-
         // Fonte principal compartilhada por todas as maquinas/dispositivos.
         let transportadoras = await buscarTransportadorasNoSupabase();
 
