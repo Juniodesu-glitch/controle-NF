@@ -3356,18 +3356,75 @@ async function handleBiparFaturamento() {
         return;
     }
 
+    // ─── 1. Busca e valida no XML da pasta (fonte primária obrigatória) ───────
     let dadosNF = await buscarDadosNFNoXML(numeroExtraido);
-    if (!dadosNF || !dadosNF.encontrada) {
-        dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
+    let fonteXml = dadosNF && dadosNF.encontrada;
+
+    // ─── 2. Fallback: Supabase — somente se o serviço XML estiver indisponível
+    //        E o banco já tiver todos os campos preenchidos desta NF ────────────
+    if (!fonteXml) {
+        if (appState.xmlServiceStatus.indisponivel) {
+            const dadosBanco = await buscarDadosNFNoSupabase(numeroExtraido);
+            const clienteCompleto = dadosBanco && dadosBanco.cliente
+                && dadosBanco.cliente !== 'Cliente nao informado'
+                && dadosBanco.cliente !== 'Cliente não informado';
+            const transpCompleta = dadosBanco && dadosBanco.transportadora
+                && dadosBanco.transportadora !== 'Nao informada'
+                && dadosBanco.transportadora !== 'Não informada';
+            if (dadosBanco && dadosBanco.encontrada && clienteCompleto && transpCompleta) {
+                dadosNF = dadosBanco;
+            }
+        }
     }
 
+    // ─── 3. Bloqueia se não há dados válidos ─────────────────────────────────
+    if (!dadosNF || !dadosNF.encontrada) {
+        if (appState.xmlServiceStatus.indisponivel) {
+            alert(
+                `❌ NF ${numeroExtraido} não pôde ser validada.\n\n` +
+                'O serviço XML local está indisponível e a NF não foi encontrada no banco com dados completos.\n\n' +
+                'Verifique se o arquivo "iniciar-aplicativo.bat" está rodando neste computador.'
+            );
+        } else {
+            alert(
+                `❌ NF ${numeroExtraido} não encontrada na pasta XML.\n\n` +
+                'O XML desta NF não está na pasta de origem (nf-app).\n' +
+                'Certifique-se de que o arquivo XML foi copiado para a pasta antes de bipar.'
+            );
+        }
+        return;
+    }
+
+    // ─── 4. Valida que o número extraído do código de barras bate com o XML ──
+    const numeroNoXml = String(dadosNF.numeroNF || '').replace(/\D/g, '');
+    if (numeroNoXml && numeroNoXml !== numeroExtraido) {
+        alert(
+            `⚠️ Inconsistência detectada.\n\n` +
+            `Número bipado : ${numeroExtraido}\n` +
+            `Número no XML : ${numeroNoXml}\n\n` +
+            'O arquivo XML não corresponde à NF bipada. Informe ao responsável pelo arquivo XML.'
+        );
+        return;
+    }
+
+    // ─── 5. Avisa (sem bloquear) se cliente estiver em branco no XML ─────────
+    const clienteOk = dadosNF.cliente
+        && dadosNF.cliente !== 'Cliente nao informado'
+        && dadosNF.cliente !== 'Cliente não informado';
+    if (!clienteOk && fonteXml) {
+        const continuar = confirm(
+            `⚠️ NF ${numeroExtraido} encontrada no XML, mas o campo "Cliente" está em branco ou ausente.\n\n` +
+            'O XML pode estar incompleto. Deseja prosseguir mesmo assim?'
+        );
+        if (!continuar) return;
+    }
+
+    // ─── 6. Aplica dados do XML na nota e registra bipagem ───────────────────
     let resultado = buscarNotaPorCodigo(numeroExtraido);
     let nota = resultado ? resultado.nota : criarNotaAPartirDaLeitura(numeroExtraido);
 
-    if (dadosNF && dadosNF.encontrada) {
-        aplicarDadosXMLNaNota(nota, dadosNF);
-        await sincronizarNfSupabase(nota).catch(() => null);
-    }
+    aplicarDadosXMLNaNota(nota, dadosNF);
+    await sincronizarNfSupabase(nota).catch(() => null);
 
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
         await sincronizarNfSupabase(nota).catch(() => null);

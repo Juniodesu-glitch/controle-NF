@@ -113,13 +113,36 @@ function listarArquivosXmlRecursivo(diretorioBase) {
 }
 
 function extrairDadosDoXml(xml, arquivo) {
+  const ideSection = getSection(xml, 'ide');
   const destSection = getSection(xml, 'dest');
   const transpSection = getSection(xml, 'transp');
   const transportaSection = getSection(transpSection, 'transporta');
   const totalSection = getSection(xml, 'total');
   const icmsTotSection = getSection(totalSection, 'ICMSTot');
 
-  const numeroNF = normalizarNumeroNF(getFirstTag(xml, 'nNF'));
+  // Lê nNF dentro de <ide> para evitar falsos positivos em outras seções do XML
+  const numeroNF = normalizarNumeroNF(getFirstTag(ideSection || xml, 'nNF'));
+
+  // Extrai chave de acesso (chNFe) para validação de consistência interna
+  let chaveAcesso = (getFirstTag(xml, 'chNFe') || '').replace(/\D/g, '');
+  if (chaveAcesso.length !== 44) {
+    const idMatch = xml.match(/<(?:[a-zA-Z0-9_]+:)?infNFe[^>]*\bId\s*=\s*["']NFe(\d{44})["']/i);
+    if (idMatch) chaveAcesso = idMatch[1];
+  }
+
+  // Valida consistência: nNF deve corresponder ao bloco da chave de acesso
+  let xmlValido = Boolean(numeroNF && numeroNF !== '0');
+  let motivoInvalido = '';
+  if (!xmlValido) {
+    motivoInvalido = 'Numero da NF ausente no XML';
+  } else if (chaveAcesso.length === 44) {
+    const numeroNaChave = normalizarNumeroNF(chaveAcesso.slice(25, 34));
+    if (numeroNaChave && numeroNaChave !== numeroNF) {
+      xmlValido = false;
+      motivoInvalido = `nNF=${numeroNF} nao corresponde a chave de acesso (esperado: ${numeroNaChave})`;
+    }
+  }
+
   const cliente = getFirstTag(destSection || xml, 'xNome') || 'Cliente nao informado';
   const transportadora = getFirstTag(transportaSection || transpSection || xml, 'xNome') || 'Nao informada';
 
@@ -166,8 +189,11 @@ function extrairDadosDoXml(xml, arquivo) {
   const dataEmissao = dataEmissaoRaw ? dataEmissaoRaw.slice(0, 10) : '';
 
   return {
-    encontrada: Boolean(numeroNF && numeroNF !== '0'),
+    encontrada: xmlValido,
     numeroNF,
+    chaveAcesso,
+    xmlValido,
+    motivoInvalido,
     cliente,
     transportadora,
     artigo,
@@ -195,10 +221,16 @@ function buscarNFPorNumero(numeroProcurado) {
       continue;
     }
 
-    const numeroXml = normalizarNumeroNF(getFirstTag(xml, 'nNF'));
+    const ideXml = getSection(xml, 'ide');
+    const numeroXml = normalizarNumeroNF(getFirstTag(ideXml || xml, 'nNF'));
     if (numeroXml !== alvo) continue;
 
     const dados = extrairDadosDoXml(xml, arquivo);
+    if (!dados.xmlValido) {
+      // XML encontrado pelo nNF mas com inconsistência interna — registra no console e ignora
+      console.warn(`[XML] Arquivo ignorado por inconsistência: ${arquivo} — ${dados.motivoInvalido}`);
+      continue;
+    }
     return { ...dados, encontrada: true };
   }
 
