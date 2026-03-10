@@ -84,12 +84,14 @@ appState.cache = {
     transportadorasFaturistaXml: [],
     carregandoTransportadorasFaturista: false,
     transportadorasFaturistaAtualizadoEm: 0,
+    transportadorasFaturistaTtlMs: 15000,
 };
 
 appState.xmlSync = {
     emAndamento: false,
     ultimoSyncEm: 0,
-    intervaloMinMs: 30000,
+    proximaTentativaEm: 0,
+    intervaloMinMs: 90000,
 };
 
 async function sincronizarDadosEmSegundoPlano() {
@@ -1420,9 +1422,11 @@ async function buscarNfsNoXML() {
         ? appState.xmlApiBaseUrls
         : ['http://127.0.0.1:8787'];
 
+    let respondeuComSucesso = false;
+
     for (const baseUrl of endpoints) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 20000);
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
 
         try {
             const response = await fetch(`${baseUrl}/api/nfs`, {
@@ -1432,11 +1436,12 @@ async function buscarNfsNoXML() {
 
             clearTimeout(timeoutId);
             if (!response.ok) continue;
+            respondeuComSucesso = true;
 
             const payload = await response.json();
             const nfs = Array.isArray(payload?.nfs) ? payload.nfs : [];
+            appState.xmlServiceStatus.indisponivel = false;
             if (nfs.length > 0) {
-                appState.xmlServiceStatus.indisponivel = false;
                 await integrarNfsXmlNoAppESupabase(nfs);
             }
             return nfs;
@@ -1446,21 +1451,34 @@ async function buscarNfsNoXML() {
         }
     }
 
+    if (!respondeuComSucesso) {
+        appState.xmlServiceStatus.indisponivel = true;
+        return null;
+    }
+
     return [];
 }
 async function sincronizarNfsXmlNoFluxo(force = false) {
     if (appState.xmlSync.emAndamento) return;
 
     const agora = Date.now();
+    if (!force && agora < appState.xmlSync.proximaTentativaEm) return;
+
     const dentroDaJanela = (agora - appState.xmlSync.ultimoSyncEm) < appState.xmlSync.intervaloMinMs;
     if (!force && dentroDaJanela) return;
 
     appState.xmlSync.emAndamento = true;
     try {
-        await buscarNfsNoXML();
+        const resultado = await buscarNfsNoXML();
+        if (resultado === null) {
+            appState.xmlSync.proximaTentativaEm = Date.now() + 120000;
+            return;
+        }
+
         appState.xmlSync.ultimoSyncEm = Date.now();
+        appState.xmlSync.proximaTentativaEm = 0;
     } catch (error) {
-        // Mantem silencioso: o fallback de tela segue usando Supabase sem bloquear o usuario.
+        appState.xmlSync.proximaTentativaEm = Date.now() + 120000;
     } finally {
         appState.xmlSync.emAndamento = false;
     }
@@ -2834,11 +2852,12 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
 async function atualizarTransportadorasFaturistaDoXml(force = false) {
     if (appState.cache.carregandoTransportadorasFaturista) return;
 
-    // Mantem o app sincronizado com novos XMLs mesmo quando o cache de transportadoras ainda e valido.
-    await sincronizarNfsXmlNoFluxo(force).catch(() => null);
+    // Mantem o app sincronizado com novos XMLs sem bloquear a tela.
+    void sincronizarNfsXmlNoFluxo(force);
 
     const agora = Date.now();
-    const cacheAindaValido = (agora - appState.cache.transportadorasFaturistaAtualizadoEm) < 120000;
+    const ttlMs = Number(appState.cache.transportadorasFaturistaTtlMs || 15000);
+    const cacheAindaValido = (agora - appState.cache.transportadorasFaturistaAtualizadoEm) < ttlMs;
     // Respeita o TTL mesmo quando nao houver transportadoras, para evitar loop de loading.
     if (!force && cacheAindaValido) {
         const transportadorasLocais = Array.from(new Set(
@@ -3403,6 +3422,6 @@ function renderizar() {
 
 document.addEventListener('DOMContentLoaded', async function() {
     document.title = APP_TITLE;
-    await inicializarDados();
     renderizar();
+    void inicializarDados();
 });

@@ -35,6 +35,13 @@ Depois rode `run_importer.bat` normalmente.
 - Substitui itens em `nf_itens`.
 - Registra sucesso/erro em `import_logs`.
 
+### Latencia de importacao
+
+- Por padrao, o importador verifica arquivos novos a cada `5` segundos.
+- Se precisar mais rapido, ajuste no `.env`:
+
+`POLL_SECONDS=3`
+
 ## 4. Integracao com o app
 
 Seu app ja foi ajustado para ler/escrever no Supabase.

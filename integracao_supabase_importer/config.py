@@ -27,7 +27,7 @@ def get_settings() -> Settings:
     if not source:
         raise ValueError("NF_SOURCE_DIR not set")
 
-    poll = int(os.getenv("POLL_SECONDS", "20"))
+    poll = int(os.getenv("POLL_SECONDS", "5"))
     state = os.getenv("STATE_FILE", "import_state.json").strip()
     log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
