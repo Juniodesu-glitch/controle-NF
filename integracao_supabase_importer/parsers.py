@@ -69,21 +69,63 @@ def _find_first_element(root: ET.Element, tag_name: str) -> ET.Element | None:
     return None
 
 
+def _find_path_text(root: ET.Element, path: List[str]) -> str:
+    if root is None:
+        return ""
+
+    current_nodes = [root]
+    for step in path:
+        next_nodes: List[ET.Element] = []
+        for node in current_nodes:
+            for child in list(node):
+                if _local_name(child.tag) == step:
+                    next_nodes.append(child)
+        if not next_nodes:
+            return ""
+        current_nodes = next_nodes
+
+    return (current_nodes[0].text or "").strip() if current_nodes else ""
+
+
+def _extract_chave_acesso(root: ET.Element) -> str:
+    chave_tag = _strip_non_digits(_find_first_text(root, "chNFe"))
+    if len(chave_tag) == 44:
+        return chave_tag
+
+    inf_nfe = _find_first_element(root, "infNFe")
+    if inf_nfe is not None:
+        attr_id = str(inf_nfe.attrib.get("Id") or "").strip()
+        if attr_id.upper().startswith("NFE"):
+            digits = _strip_non_digits(attr_id[3:])
+            if len(digits) == 44:
+                return digits
+
+    return ""
+
+
 def parse_xml_nf(file_path: str) -> Dict[str, Any]:
     tree = ET.parse(file_path)
     root = tree.getroot()
 
-    numero_nf = _normalize_nf_number(_find_first_text(root, "nNF"))
-    chave_acesso = _strip_non_digits(_find_first_text(root, "chNFe"))
+    numero_nf = _normalize_nf_number(
+        _find_path_text(root, ["NFe", "infNFe", "ide", "nNF"])
+        or _find_path_text(root, ["infNFe", "ide", "nNF"])
+        or _find_first_text(root, "nNF")
+    )
+    chave_acesso = _extract_chave_acesso(root)
 
-    # Fallbacks para casos de XML incompleto/fora do padrao de tag nNF.
     if (not numero_nf or numero_nf == "0") and len(chave_acesso) == 44:
         numero_nf = _normalize_nf_number(chave_acesso[25:34])
+
     if not numero_nf or numero_nf == "0":
-        nome_arquivo = os.path.basename(file_path)
-        m = re.search(r"(\d{6,10})", nome_arquivo)
-        if m:
-            numero_nf = _normalize_nf_number(m.group(1))
+        raise ValueError(f"XML invalido sem numero NF (nNF): {file_path}")
+
+    if len(chave_acesso) == 44:
+        numero_pela_chave = _normalize_nf_number(chave_acesso[25:34])
+        if numero_pela_chave != numero_nf:
+            raise ValueError(
+                f"Inconsistencia XML: nNF={numero_nf} difere da chave={numero_pela_chave} ({file_path})"
+            )
     dest = _find_first_element(root, "dest")
     cliente = _find_child_text(dest, "xNome") or "Cliente nao informado"
 
@@ -99,10 +141,28 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
     if not transportadora:
         transportadora = "Nao informada"
 
-    pedido = _find_first_text(root, "xPed") or _find_first_text(root, "nPed") or "-"
-    serie = _find_first_text(root, "serie") or "1"
+    pedido = (
+        _find_path_text(root, ["NFe", "infNFe", "det", "prod", "xPed"])
+        or _find_path_text(root, ["infNFe", "det", "prod", "xPed"])
+        or _find_first_text(root, "xPed")
+        or _find_first_text(root, "nPed")
+        or "-"
+    )
+    serie = (
+        _find_path_text(root, ["NFe", "infNFe", "ide", "serie"])
+        or _find_path_text(root, ["infNFe", "ide", "serie"])
+        or _find_first_text(root, "serie")
+        or "1"
+    )
 
-    data_emissao = _find_first_text(root, "dhEmi") or _find_first_text(root, "dEmi")
+    data_emissao = (
+        _find_path_text(root, ["NFe", "infNFe", "ide", "dhEmi"])
+        or _find_path_text(root, ["NFe", "infNFe", "ide", "dEmi"])
+        or _find_path_text(root, ["infNFe", "ide", "dhEmi"])
+        or _find_path_text(root, ["infNFe", "ide", "dEmi"])
+        or _find_first_text(root, "dhEmi")
+        or _find_first_text(root, "dEmi")
+    )
     if data_emissao:
         data_emissao = data_emissao[:10]
 
