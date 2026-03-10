@@ -2561,9 +2561,25 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
         return digitos ? digitos.slice(-3) : '';
     };
 
+    const numerosFaturados = new Set(
+        appState.bipagensFaturamento
+            .map((b) => normalizarNumeroNf(b?.numeroNF || ''))
+            .filter(Boolean)
+    );
+    const usaBipagensComoFonte = numerosFaturados.size > 0;
+
     const notasCandidatas = appState.notasFiscais.filter((nf) => {
+        const numero = normalizarNumeroNf(nf.numero);
+        if (!numero) return false;
+
+        if (usaBipagensComoFonte) {
+            // Regra principal: exporta tudo que ja foi faturado pelo app.
+            return numerosFaturados.has(numero);
+        }
+
+        // Fallback legado quando ainda nao existem bipagens carregadas.
         const status = String(nf.status || '').trim().toLowerCase();
-        return status !== 'expedida' && status !== 'entregue';
+        return status === 'faturada';
     });
 
     if (incluirFallbackXml) {
@@ -2574,6 +2590,9 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             for (const row of nfsXml) {
                 const numero = normalizarNumeroNf(row?.numeroNF || row?.numero_nf || row?.numero);
                 if (!numero || existentes.has(numero)) continue;
+
+                // Mantem consistencia com a regra de faturamento: so injeta XML das NFs faturadas.
+                if (usaBipagensComoFonte && !numerosFaturados.has(numero)) continue;
 
                 notasCandidatas.push({
                     id: Math.floor(Math.random() * 1_000_000_000),
@@ -2626,8 +2645,6 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
                 dataNfRaw = String(dadosNf.dataEmissao ?? dataNfRaw);
             }
         }
-
-        if (!transportadora) continue;
 
         if (!transportadora) {
             continue;
@@ -2684,9 +2701,9 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
             transportadoras = await buscarTransportadorasNoXML();
         }
 
-        // Fallback 2: deriva pelas NFs conhecidas em memoria.
+        // Fallback 2: deriva pelas NFs faturadas conhecidas (com enriquecimento XML quando necessario).
         if (!Array.isArray(transportadoras) || transportadoras.length === 0) {
-            const linhas = await montarLinhasExportacaoFaturista('');
+            const linhas = await montarLinhasExportacaoFaturista('', true);
             transportadoras = Array.from(new Set(linhas.map((l) => String(l.transp || '').trim()).filter(Boolean)))
                 .sort((a, b) => a.localeCompare(b, 'pt-BR'));
         }
