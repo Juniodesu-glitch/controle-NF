@@ -100,6 +100,9 @@ def process_one_file(client: SupabaseClient, file_path: str, logger: logging.Log
 def main() -> None:
     settings = get_settings()
     run_once = os.getenv("RUN_ONCE", "0").strip() == "1"
+    force_continuous = os.getenv("IMPORTER_FORCE_CONTINUOUS", "0").strip() == "1"
+    if force_continuous:
+        run_once = False
     force_reimport_all = os.getenv("FORCE_REIMPORT_ALL", "0").strip() == "1"
 
     logging.basicConfig(
@@ -121,6 +124,8 @@ def main() -> None:
     logger.info("Poll seconds: %s", settings.poll_seconds)
     if run_once:
         logger.info("RUN_ONCE enabled: importer will execute a single scan cycle")
+    if force_continuous:
+        logger.info("IMPORTER_FORCE_CONTINUOUS enabled: RUN_ONCE will be ignored")
     if force_reimport_all:
         logger.info("FORCE_REIMPORT_ALL enabled: all XML/PDF files will be reprocessed")
 

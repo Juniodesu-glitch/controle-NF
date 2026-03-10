@@ -10,6 +10,12 @@ if ([string]::IsNullOrWhiteSpace($env:NF_SOURCE_DIR)) {
 # Evita herdar variáveis globais de execução única no Windows.
 $env:RUN_ONCE = '0'
 $env:FORCE_REIMPORT_ALL = '0'
+$env:IMPORTER_FORCE_CONTINUOUS = '1'
+
+# Mantém varredura frequente mesmo quando há POLL_SECONDS global no Windows.
+if ([string]::IsNullOrWhiteSpace($env:POLL_SECONDS) -or $env:POLL_SECONDS -eq '20') {
+    $env:POLL_SECONDS = '3'
+}
 
 $logDir = Join-Path $scriptDir 'logs'
 if (-not (Test-Path $logDir)) {
