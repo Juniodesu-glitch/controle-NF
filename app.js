@@ -460,6 +460,48 @@ function numeroToDbValue(nota) {
     return String(nota.numero || '').replace(/[^0-9]/g, '') || String(nota.numero || '');
 }
 
+function montarPayloadNfSupabase(nota) {
+    return {
+        numero_nf: numeroToDbValue(nota),
+        serie: String(nota.serie || '1'),
+        pedido: String(nota.pedido || '-'),
+        cliente: String(nota.cliente || 'Cliente não informado'),
+        transportadora: String(nota.transportadora || 'Não informada'),
+        artigo: String(nota.artigo || '-'),
+        quantidade_itens: Number(nota.quantidadeItens || 0),
+        metros: Number(nota.metros || 0),
+        peso_bruto: Number(nota.pesoBruto || 0),
+        valor_total: Number(nota.valor || 0),
+        data_emissao: nota.dataEmissao || null,
+        status: String(nota.status || 'pendente'),
+        origem_xml: String(nota.origemXml || ''),
+    };
+}
+
+async function sincronizarNfsSupabaseEmLote(notas, tamanhoLote = 200) {
+    if (!Array.isArray(notas) || notas.length === 0) return;
+
+    const porNumero = new Map();
+    for (const nota of notas) {
+        const numeroDb = numeroToDbValue(nota);
+        if (!numeroDb) continue;
+        porNumero.set(numeroDb, montarPayloadNfSupabase(nota));
+    }
+
+    const payloads = Array.from(porNumero.values());
+    for (let i = 0; i < payloads.length; i += tamanhoLote) {
+        const lote = payloads.slice(i, i + tamanhoLote);
+
+        await supabaseRequest(`${supabaseConfig.tables.nfs}?on_conflict=numero_nf`, {
+            method: 'POST',
+            headers: {
+                Prefer: 'resolution=merge-duplicates,return=minimal',
+            },
+            body: lote,
+        });
+    }
+}
+
 async function garantirNfNoSupabase(nota) {
     const numeroDb = numeroToDbValue(nota);
     if (!numeroDb) return null;
@@ -479,20 +521,7 @@ async function garantirNfNoSupabase(nota) {
         return id;
     }
 
-    const insertBody = {
-        numero_nf: numeroDb,
-        serie: String(nota.serie || '1'),
-        pedido: String(nota.pedido || '-'),
-        cliente: String(nota.cliente || 'Cliente não informado'),
-        transportadora: String(nota.transportadora || 'Não informada'),
-        artigo: String(nota.artigo || '-'),
-        quantidade_itens: Number(nota.quantidadeItens || 0),
-        metros: Number(nota.metros || 0),
-        peso_bruto: Number(nota.pesoBruto || 0),
-        valor_total: Number(nota.valor || 0),
-        data_emissao: nota.dataEmissao || null,
-        status: String(nota.status || 'pendente'),
-    };
+    const insertBody = montarPayloadNfSupabase(nota);
 
     const inserted = await supabaseRequest(`${supabaseConfig.tables.nfs}?select=id,numero_nf`, {
         method: 'POST',
@@ -516,18 +545,12 @@ async function sincronizarNfSupabase(nota) {
 
         await supabaseRequest(`${supabaseConfig.tables.nfs}?id=eq.${encodeURIComponent(nfId)}`, {
             method: 'PATCH',
-            body: {
-                pedido: String(nota.pedido || '-'),
-                cliente: String(nota.cliente || 'Cliente não informado'),
-                transportadora: String(nota.transportadora || 'Não informada'),
-                artigo: String(nota.artigo || '-'),
-                quantidade_itens: Number(nota.quantidadeItens || 0),
-                metros: Number(nota.metros || 0),
-                peso_bruto: Number(nota.pesoBruto || 0),
-                valor_total: Number(nota.valor || 0),
-                data_emissao: nota.dataEmissao || null,
-                status: String(nota.status || 'pendente'),
-            },
+            body: (() => {
+                const payload = montarPayloadNfSupabase(nota);
+                delete payload.numero_nf;
+                delete payload.serie;
+                return payload;
+            })(),
         });
     } catch (error) {
         console.warn('[Supabase] Falha ao sincronizar NF:', error?.message || error);
@@ -1447,6 +1470,7 @@ async function integrarNfsXmlNoAppESupabase(nfsXml) {
     if (!Array.isArray(nfsXml) || nfsXml.length === 0) return;
 
     const normalizarNumero = (valor) => String(valor || '').replace(/\D/g, '');
+    const notasParaSincronizar = [];
 
     for (const row of nfsXml) {
         const numero = normalizarNumero(row?.numeroNF || row?.numero_nf || row?.numero);
@@ -1471,9 +1495,19 @@ async function integrarNfsXmlNoAppESupabase(nfsXml) {
             dataEmissao: row?.dataEmissao ?? row?.data_emissao,
             origemXml: row?.origemXml || row?.arquivo,
         });
+        notasParaSincronizar.push(nota);
+    }
 
-        // Sincroniza dados enriquecidos para o banco central quando este cliente tiver acesso aos XMLs.
-        await sincronizarNfSupabase(nota).catch(() => null);
+    // Sincronizacao em lote para acelerar a subida de todas as NFs da pasta ao banco.
+    if (notasParaSincronizar.length > 0) {
+        try {
+            await sincronizarNfsSupabaseEmLote(notasParaSincronizar, 200);
+        } catch (error) {
+            // Fallback resiliente: se upsert em lote falhar, aplica sincronizacao individual.
+            for (const nota of notasParaSincronizar) {
+                await sincronizarNfSupabase(nota).catch(() => null);
+            }
+        }
     }
 }
 
@@ -2822,7 +2856,7 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
 
         // Fallback 2: deriva pelas NFs faturadas conhecidas (com enriquecimento XML quando necessario).
         if (!Array.isArray(transportadoras) || transportadoras.length === 0) {
-            const linhas = await montarLinhasExportacaoFaturista('', true);
+            const linhas = await montarLinhasExportacaoFaturista('', false);
             transportadoras = Array.from(new Set(linhas.map((l) => String(l.transp || '').trim()).filter(Boolean)))
                 .sort((a, b) => a.localeCompare(b, 'pt-BR'));
         }
@@ -2870,9 +2904,11 @@ function baixarBlobNoNavegador(blob, nomeArquivo) {
 }
 
 async function gerarPlanilhaFaturistaExcel() {
-    // Sincroniza imediatamente antes da exportacao para refletir novas NFs do banco central.
-    await carregarDadosSupabase().catch(() => null);
-    await atualizarTransportadorasFaturistaDoXml(true).catch(() => null);
+    // Atualiza dados em paralelo para reduzir latencia percebida da exportacao.
+    await Promise.all([
+        carregarDadosSupabase().catch(() => null),
+        atualizarTransportadorasFaturistaDoXml(false).catch(() => null),
+    ]);
 
     const transportadorasDisponiveis = getTransportadorasFaturistaDisponiveis();
     if (!appState.filtros.transportadoraFaturista && transportadorasDisponiveis.length === 1) {
@@ -2885,7 +2921,7 @@ async function gerarPlanilhaFaturistaExcel() {
         return;
     }
 
-    const linhas = await montarLinhasExportacaoFaturista(transportadoraFiltro, true);
+    const linhas = await montarLinhasExportacaoFaturista(transportadoraFiltro, false);
     if (linhas.length === 0) {
         alert('❌ Nenhuma NF disponível para a transportadora selecionada.');
         return;
