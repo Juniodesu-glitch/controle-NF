@@ -1407,6 +1407,7 @@ async function buscarNfsNoXML() {
             const nfs = Array.isArray(payload?.nfs) ? payload.nfs : [];
             if (nfs.length > 0) {
                 appState.xmlServiceStatus.indisponivel = false;
+                await integrarNfsXmlNoAppESupabase(nfs);
             }
             return nfs;
         } catch (error) {
@@ -1416,6 +1417,40 @@ async function buscarNfsNoXML() {
     }
 
     return [];
+}
+
+async function integrarNfsXmlNoAppESupabase(nfsXml) {
+    if (!Array.isArray(nfsXml) || nfsXml.length === 0) return;
+
+    const normalizarNumero = (valor) => String(valor || '').replace(/\D/g, '');
+
+    for (const row of nfsXml) {
+        const numero = normalizarNumero(row?.numeroNF || row?.numero_nf || row?.numero);
+        if (!numero) continue;
+
+        let nota = appState.notasFiscais.find((n) => normalizarNumero(n?.numero) === numero);
+        if (!nota) {
+            nota = criarNotaAPartirDaLeitura(numero);
+        }
+
+        aplicarDadosXMLNaNota(nota, {
+            encontrada: true,
+            numeroNF: numero,
+            cliente: row?.cliente,
+            transportadora: row?.transportadora,
+            artigo: row?.artigo,
+            pedido: row?.pedido,
+            quantidadeItens: row?.quantidadeItens ?? row?.quantidade_itens,
+            metros: row?.metros,
+            pesoBruto: row?.pesoBruto ?? row?.peso_bruto,
+            valorTotal: row?.valorTotal ?? row?.valor_total,
+            dataEmissao: row?.dataEmissao ?? row?.data_emissao,
+            origemXml: row?.origemXml || row?.arquivo,
+        });
+
+        // Sincroniza dados enriquecidos para o banco central quando este cliente tiver acesso aos XMLs.
+        await sincronizarNfSupabase(nota).catch(() => null);
+    }
 }
 
 async function buscarTransportadorasNoSupabase() {
@@ -2566,25 +2601,13 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
         return digitos ? digitos.slice(-3) : '';
     };
 
-    const numerosFaturados = new Set(
-        appState.bipagensFaturamento
-            .map((b) => normalizarNumeroNf(b?.numeroNF || ''))
-            .filter(Boolean)
-    );
-    const usaBipagensComoFonte = numerosFaturados.size > 0;
-
     const notasCandidatas = appState.notasFiscais.filter((nf) => {
         const numero = normalizarNumeroNf(nf.numero);
         if (!numero) return false;
 
-        if (usaBipagensComoFonte) {
-            // Regra principal: exporta tudo que ja foi faturado pelo app.
-            return numerosFaturados.has(numero);
-        }
-
-        // Fallback legado quando ainda nao existem bipagens carregadas.
+        // Regra sistemica: considera todas as NFs nao expedidas para o filtro por transportadora.
         const status = String(nf.status || '').trim().toLowerCase();
-        return status === 'faturada';
+        return status !== 'expedida' && status !== 'entregue';
     });
 
     if (incluirFallbackXml) {
@@ -2595,9 +2618,6 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             for (const row of nfsXml) {
                 const numero = normalizarNumeroNf(row?.numeroNF || row?.numero_nf || row?.numero);
                 if (!numero || existentes.has(numero)) continue;
-
-                // Mantem consistencia com a regra de faturamento: so injeta XML das NFs faturadas.
-                if (usaBipagensComoFonte && !numerosFaturados.has(numero)) continue;
 
                 notasCandidatas.push({
                     id: Math.floor(Math.random() * 1_000_000_000),
