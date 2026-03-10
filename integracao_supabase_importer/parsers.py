@@ -297,7 +297,216 @@ def parse_pdf_nf(file_path: str) -> Dict[str, Any]:
 def parse_nf_file(file_path: str) -> Dict[str, Any]:
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".xml":
+        try:
+            tree = ET.parse(file_path)
+        except ET.ParseError as exc:
+            raise ValueError(f"XML invalido ({file_path}): {exc}") from exc
+        root = tree.getroot()
+        if _is_jasperprint_xml(root):
+            return parse_danfe_jasperprint_xml(file_path)
         return parse_xml_nf(file_path)
     if ext == ".pdf":
         return parse_pdf_nf(file_path)
     raise ValueError(f"Unsupported file extension: {ext}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DANFE JasperPrint XML parser (formato exportado pelo Systextil / JasperReports)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_jasperprint_xml(root: ET.Element) -> bool:
+    """Retorna True se o XML é um documento JasperReports (DANFE visual)."""
+    local = _local_name(root.tag)
+    ns = root.tag
+    return "jasperPrint" in local or "jasperreports" in str(ns).lower()
+
+
+def _jasperprint_texts(root: ET.Element) -> List[str]:
+    """Extrai todos os elementos de texto do JasperPrint, ignorando dados base64."""
+    result: List[str] = []
+    for elem in root.iter():
+        if _local_name(elem.tag) == "text":
+            t = (elem.text or "").strip()
+            # Ignora blobs base64 (strings longas só com chars alfanuméricos)
+            if t and len(t) <= 500 and not re.fullmatch(r"[A-Za-z0-9+/=]{60,}", t):
+                result.append(t)
+    return result
+
+
+def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
+    """Parseia DANFE no formato JasperReports exportado pelo Systextil."""
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    texts = _jasperprint_texts(root)
+    joined = "\n".join(texts)
+
+    # ── Chave de acesso (44 dígitos, possivelmente com espaços a cada 4) ─────
+    chave_acesso = ""
+    m_chave = re.search(r"\b(\d{4}(?:\s+\d{4}){10})\b", joined)
+    if m_chave:
+        chave_acesso = re.sub(r"\D", "", m_chave.group(1))
+    if len(chave_acesso) != 44:
+        for t in texts:
+            digits = re.sub(r"\D", "", t)
+            if len(digits) == 44:
+                chave_acesso = digits
+                break
+
+    # ── Número da NF ─────────────────────────────────────────────────────────
+    numero_nf = ""
+    if len(chave_acesso) == 44:
+        numero_nf = _normalize_nf_number(chave_acesso[25:34])
+    if not numero_nf or numero_nf == "0":
+        # Fallback: número com zeros à esquerda (ex: "000400200")
+        for t in texts:
+            if re.fullmatch(r"0{1,6}\d{3,8}", t):
+                numero_nf = _normalize_nf_number(t)
+                break
+    if not numero_nf or numero_nf == "0":
+        raise ValueError(f"DANFE JasperPrint sem numero NF identificavel: {file_path}")
+
+    # ── Data de emissão ───────────────────────────────────────────────────────
+    data_emissao = ""
+    for t in texts:
+        m_date = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", t)
+        if m_date:
+            data_emissao = f"{m_date.group(3)}-{m_date.group(2)}-{m_date.group(1)}"
+            break
+
+    # ── Valor total da nota ───────────────────────────────────────────────────
+    valor_total = 0.0
+    for i, t in enumerate(texts):
+        if t.upper() == "VALOR TOTAL DA NOTA":
+            for j in range(i + 1, min(i + 8, len(texts))):
+                v = texts[j].strip()
+                if re.fullmatch(r"\d[\d.,]*", v):
+                    valor_total = _to_float(v)
+                    break
+            break
+
+    # ── Peso bruto ────────────────────────────────────────────────────────────
+    peso_bruto = 0.0
+    for i, t in enumerate(texts):
+        if t.upper() == "PESO BRUTO":
+            for j in range(i + 1, min(i + 6, len(texts))):
+                v = texts[j].strip()
+                if re.fullmatch(r"\d[\d.,]*", v):
+                    peso_bruto = _to_float(v)
+                    break
+            break
+
+    # ── Transportadora ────────────────────────────────────────────────────────
+    # Busca elemento de texto com palavras-chave de empresa transportadora
+    transportadora = "Nao informada"
+    _transp_kw = re.compile(
+        r"\b(?:TRANSPORT(?:E|ES|ADORA)?|LOG[IÍ]STICA|EXPRESSO|CARGAS?|COURIER|FRETE)\b",
+        re.IGNORECASE,
+    )
+    _transp_excl = re.compile(
+        r"\b(?:VOLUME|TRANSPORTAD[OR]|POR CONTA|FRETE POR)\b", re.IGNORECASE
+    )
+    for t in texts:
+        if _transp_kw.search(t) and not _transp_excl.search(t) and len(t.split()) >= 2:
+            transportadora = t
+            break
+
+    # ── Cliente (destinatário) ─────────────────────────────────────────────────
+    # Nome da empresa do destinatário: geralmente contém LTDA, S/A, EIRELI, etc.
+    cliente = "Cliente nao informado"
+    _company_kw = re.compile(
+        r"\b(?:LTDA|EIRELI|EPP|ME\b|S\.?/?A\.?|INDUSTRIA|INDÚSTRIA|COMERCIO|COMÉRCIO)\b",
+        re.IGNORECASE,
+    )
+    # Encontra a seção "DESTINATÁRIO/REMETENTE" e procura nome de empresa dentro dela
+    dest_idx = None
+    for i, t in enumerate(texts):
+        if "DESTINAT" in t.upper() and "REMETENTE" in t.upper():
+            dest_idx = i
+            break
+    search_start = dest_idx + 1 if dest_idx is not None else 0
+    end_section = len(texts)
+    for i in range(search_start, len(texts)):
+        if any(kw in texts[i].upper() for kw in ("FATURA", "CÁLCULO", "CALCULO", "IMPOSTO")):
+            end_section = i
+            break
+    for t in texts[search_start:end_section]:
+        if (
+            _company_kw.search(t)
+            and t != transportadora
+            and len(t) >= 6
+            and "CAPRICORNIO" not in t.upper()
+            and "CAPRICÓRNIO" not in t.upper()
+        ):
+            cliente = t
+            break
+    if cliente == "Cliente nao informado":
+        # Busca mais ampla: qualquer nome de empresa fora do emitente
+        for t in texts:
+            if (
+                _company_kw.search(t)
+                and t != transportadora
+                and len(t) >= 6
+                and "CAPRICORNIO" not in t.upper()
+                and "CAPRICÓRNIO" not in t.upper()
+            ):
+                cliente = t
+                break
+
+    # ── Artigo (descrição do produto) ─────────────────────────────────────────
+    artigo = "-"
+    _prod_skip = {
+        "COD. PRODUTO", "DESCRIÇÃO DOS PRODUTOS / SERVIÇOS", "NCM / SH", "CFOP",
+        "QUANT", "V. UNIT", "V. TOTAL", "BC. ICMS", "V. ICMS", "V. IPI",
+        "ALIQ", "IPI", "ALIQ. ICMS", "CST", "DADOS ADICIONAIS",
+        "RESERVADO AO FISCO", "DADOS DO PRODUTO / SERVIÇOS",
+        "0 - EMITENTE", "1 - EMITENTE",
+    }
+    prod_idx = None
+    for i, t in enumerate(texts):
+        if "DADOS DO PRODUTO" in t.upper():
+            prod_idx = i
+            break
+    if prod_idx is not None:
+        for j in range(prod_idx + 1, min(prod_idx + 80, len(texts))):
+            t = texts[j].strip()
+            if (
+                len(t) >= 10
+                and t.upper() not in _prod_skip
+                and not re.fullmatch(r"[\d.,/\-]+", t)
+                and not re.fullmatch(r"\d{3,8}", t)
+            ):
+                artigo = t
+                break
+
+    # ── Quantidade / metros ───────────────────────────────────────────────────
+    total_qtd = 0.0
+    total_metros = 0.0
+    for i, t in enumerate(texts):
+        if t.upper() in ("QUANT", "QUANTIDADE"):
+            for j in range(i + 1, min(i + 30, len(texts))):
+                v = texts[j].strip()
+                if re.fullmatch(r"\d+[.,]\d+", v):
+                    total_qtd = _to_float(v)
+                    if total_qtd >= 1:
+                        total_metros = total_qtd
+                    break
+            break
+
+    return {
+        "numero_nf": numero_nf,
+        "chave_acesso": chave_acesso,
+        "serie": "1",
+        "pedido": "-",
+        "cliente": cliente,
+        "transportadora": transportadora,
+        "artigo": artigo,
+        "quantidade_itens": total_qtd,
+        "metros": total_metros,
+        "peso_bruto": peso_bruto,
+        "valor_total": valor_total,
+        "data_emissao": data_emissao,
+        "status": "pendente",
+        "origem_xml": file_path,
+        "origem_tipo": "danfe_xml",
+        "itens": [],
+    }
