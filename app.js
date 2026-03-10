@@ -2615,6 +2615,16 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
 
     const normalizarNumeroNf = (valor) => String(valor || '').replace(/\D/g, '') || String(valor || '');
     const normalizarTexto = (valor) => String(valor || '').trim().toLowerCase();
+    const normalizarChaveTransportadora = (valor) => normalizarTexto(valor).replace(/[^a-z0-9]/g, '');
+    const correspondeTransportadora = (transportadora, filtro) => {
+        const alvo = normalizarChaveTransportadora(filtro);
+        if (!alvo) return true;
+
+        const atual = normalizarChaveTransportadora(transportadora);
+        if (!atual) return false;
+
+        return atual === alvo || atual.includes(alvo) || alvo.includes(atual);
+    };
     const valorAusente = (valor, placeholders = []) => {
         const normalizado = normalizarTexto(valor);
         if (!normalizado) return true;
@@ -2757,7 +2767,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             continue;
         }
 
-        if (transportadoraFiltro && normalizarTexto(transportadora) !== normalizarTexto(transportadoraFiltro)) {
+        if (!correspondeTransportadora(transportadora, transportadoraFiltro)) {
             continue;
         }
 
@@ -2836,14 +2846,42 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
     }
 }
 
+function baixarBlobNoNavegador(blob, nomeArquivo) {
+    const nav = window.navigator;
+    if (nav && typeof nav.msSaveOrOpenBlob === 'function') {
+        nav.msSaveOrOpenBlob(blob, nomeArquivo);
+        return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = nomeArquivo;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+        if (link.parentNode) {
+            link.parentNode.removeChild(link);
+        }
+    }, 1200);
+}
+
 async function gerarPlanilhaFaturistaExcel() {
     // Sincroniza imediatamente antes da exportacao para refletir novas NFs do banco central.
     await carregarDadosSupabase().catch(() => null);
     await atualizarTransportadorasFaturistaDoXml(true).catch(() => null);
 
+    const transportadorasDisponiveis = getTransportadorasFaturistaDisponiveis();
+    if (!appState.filtros.transportadoraFaturista && transportadorasDisponiveis.length === 1) {
+        appState.filtros.transportadoraFaturista = transportadorasDisponiveis[0];
+    }
+
     const transportadoraFiltro = String(appState.filtros.transportadoraFaturista || '').trim();
     if (!transportadoraFiltro) {
-        alert('❌ Selecione uma transportadora para exportar.');
+        alert('❌ Selecione uma transportadora para exportar. Se a lista estiver vazia, confirme se as NFs XML já foram importadas.');
         return;
     }
 
@@ -2948,12 +2986,15 @@ async function gerarPlanilhaFaturistaExcel() {
 </html>`;
 
     const blob = new Blob(['\uFEFF', htmlExcel], { type: 'application/vnd.ms-excel;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `faturamento_${transportadoraFiltro.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.xls`;
-    link.click();
+    const nomeArquivo = `faturamento_${transportadoraFiltro.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.xls`;
 
-    alert('✅ Planilha do faturista exportada com sucesso!');
+    try {
+        baixarBlobNoNavegador(blob, nomeArquivo);
+        alert('✅ Planilha do faturista exportada com sucesso!');
+    } catch (error) {
+        console.warn('[Exportacao] Falha ao baixar planilha do faturista:', error?.message || error);
+        alert('❌ Não foi possível iniciar o download da planilha. Verifique o bloqueio de download do navegador e tente novamente.');
+    }
 }
 
 // ========================================

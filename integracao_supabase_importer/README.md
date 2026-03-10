@@ -21,6 +21,12 @@ Execute:
 
 Ele instala dependencias e inicia o monitoramento continuo.
 
+Se voce usa PyCharm, pode apontar o Python da `.venv` sem usar conda:
+
+`set PYTHON_EXE=C:\Users\SEU_USUARIO\PycharmProjects\SEU_PROJETO\.venv\Scripts\python.exe`
+
+Depois rode `run_importer.bat` normalmente.
+
 ## 3. Como funciona
 
 - Faz varredura recursiva na pasta `NF_SOURCE_DIR`.

@@ -27,16 +27,35 @@ Write-ManagerLog 'Iniciando monitor 24x7 do importer...'
 
 $pythonExe = $env:PYTHON_EXE
 if ([string]::IsNullOrWhiteSpace($pythonExe)) {
-    $pythonExe = 'C:\tools\Anaconda3\python.exe'
+    $candidatos = @(
+        (Join-Path $scriptDir '.venv\Scripts\python.exe'),
+        (Join-Path $scriptDir 'venv\Scripts\python.exe'),
+        'C:\tools\Anaconda3\python.exe'
+    )
+
+    $pythonExe = $null
+    foreach ($candidato in $candidatos) {
+        if (-not [string]::IsNullOrWhiteSpace($candidato) -and (Test-Path $candidato)) {
+            $pythonExe = $candidato
+            break
+        }
+    }
 }
 
 if (-not (Test-Path $pythonExe)) {
+    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        $pythonExe = $pyCmd.Source
+    }
+
+    if (-not (Test-Path $pythonExe)) {
     $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCmd) {
         $pythonExe = $pythonCmd.Source
     } else {
-        Write-ManagerLog 'ERRO: Python não encontrado. Defina PYTHON_EXE ou adicione python ao PATH.'
+        Write-ManagerLog 'ERRO: Python não encontrado. Defina PYTHON_EXE para o python.exe do PyCharm/.venv ou adicione python/py ao PATH.'
         exit 1
+    }
     }
 }
 
