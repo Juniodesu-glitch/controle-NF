@@ -1,3 +1,5 @@
-2026-03-10 07:28:28,689 [INFO] Importer started
-2026-03-10 07:28:28,692 [INFO] Source dir: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app
-2026-03-10 07:28:28,693 [INFO] Poll seconds: 20
+2026-03-10 10:44:48,425 [INFO] Importer started
+2026-03-10 10:44:48,428 [INFO] Source dir: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app
+2026-03-10 10:44:48,428 [INFO] Poll seconds: 20
+2026-03-10 10:44:48,429 [INFO] RUN_ONCE enabled: importer will execute a single scan cycle
+2026-03-10 10:44:48,430 [INFO] RUN_ONCE cycle finished. Imported/updated files: 0

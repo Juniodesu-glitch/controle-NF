@@ -18,6 +18,18 @@ function Write-ManagerLog([string]$message) {
     Write-Host $line
 }
 
+function Test-PythonExecutable([string]$exePath) {
+    if ([string]::IsNullOrWhiteSpace($exePath)) { return $false }
+    if (-not (Test-Path $exePath)) { return $false }
+
+    try {
+        $null = & $exePath --version 2>&1
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
 if (-not (Test-Path '.env')) {
     Write-ManagerLog 'ERRO: .env não encontrado. Copie .env.example para .env e configure as variáveis.'
     exit 1
@@ -30,46 +42,71 @@ if ([string]::IsNullOrWhiteSpace($pythonExe)) {
     $candidatos = @(
         (Join-Path $scriptDir '.venv\Scripts\python.exe'),
         (Join-Path $scriptDir 'venv\Scripts\python.exe'),
+        'C:\Users\junio.gomes\PycharmProjects\PythonProject7\.venv\Scripts\python.exe',
+        'C:\Users\junio.gomes\PycharmProjects\PythonProject10\.venv\Scripts\python.exe',
         'C:\tools\Anaconda3\python.exe'
     )
 
     $pythonExe = $null
     foreach ($candidato in $candidatos) {
-        if (-not [string]::IsNullOrWhiteSpace($candidato) -and (Test-Path $candidato)) {
+        if (Test-PythonExecutable $candidato) {
             $pythonExe = $candidato
             break
         }
     }
 }
 
-if (-not (Test-Path $pythonExe)) {
-    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        $pythonExe = $pyCmd.Source
+if (-not (Test-PythonExecutable $pythonExe)) {
+    $pythonExe = $null
+
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd -and (Test-PythonExecutable $pythonCmd.Source)) {
+        $pythonExe = $pythonCmd.Source
     }
 
-    if (-not (Test-Path $pythonExe)) {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $pythonExe = $pythonCmd.Source
-    } else {
-        Write-ManagerLog 'ERRO: Python não encontrado. Defina PYTHON_EXE para o python.exe do PyCharm/.venv ou adicione python/py ao PATH.'
-        exit 1
+    if (-not $pythonExe) {
+        $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+        if ($pyCmd) {
+            try {
+                $null = & $pyCmd.Source -3 --version 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $pythonExe = "$($pyCmd.Source) -3"
+                }
+            } catch {
+                # segue para erro final
+            }
+        }
     }
+
+    if (-not $pythonExe) {
+        Write-ManagerLog 'ERRO: Python não encontrado. Defina PYTHON_EXE para o python.exe do PyCharm/.venv ou do Anaconda.'
+        exit 1
     }
 }
 
-$pythonVersion = (& $pythonExe --version 2>&1 | Select-Object -First 1)
+$pythonVersion = if ($pythonExe -like '* -3') {
+    & $pyCmd.Source -3 --version 2>&1 | Select-Object -First 1
+} else {
+    & $pythonExe --version 2>&1 | Select-Object -First 1
+}
 Write-ManagerLog "Python selecionado: $pythonExe"
 Write-ManagerLog "Versão detectada: $pythonVersion"
 
 while ($true) {
     try {
         Write-ManagerLog 'Garantindo dependências Python...'
-        & $pythonExe -m pip install -r requirements.txt | Out-Null
+        if ($pythonExe -like '* -3') {
+            & $pyCmd.Source -3 -m pip install -r requirements.txt | Out-Null
+        } else {
+            & $pythonExe -m pip install -r requirements.txt | Out-Null
+        }
 
         Write-ManagerLog 'Iniciando importer.py...'
-        $process = Start-Process -FilePath $pythonExe -ArgumentList 'importer.py' -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru -NoNewWindow
+        if ($pythonExe -like '* -3') {
+            $process = Start-Process -FilePath $pyCmd.Source -ArgumentList '-3', 'importer.py' -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru -NoNewWindow
+        } else {
+            $process = Start-Process -FilePath $pythonExe -ArgumentList 'importer.py' -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru -NoNewWindow
+        }
         $process.WaitForExit()
 
         $exitCode = $process.ExitCode
