@@ -200,6 +200,37 @@ function Find-NFInXmlFolder([string]$numeroProcurado) {
     return $null
 }
 
+function Get-TransportadorasFromXmlFolder {
+    if (-not (Test-Path -LiteralPath $xmlBaseDir)) {
+        return @{ erro = 'Diretorio de XML nao encontrado'; xmlBaseDir = $xmlBaseDir }
+    }
+
+    $xmlFiles = Get-ChildItem -LiteralPath $xmlBaseDir -Filter *.xml -Recurse -File -ErrorAction SilentlyContinue
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($file in $xmlFiles) {
+        try {
+            [xml]$doc = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+        } catch {
+            continue
+        }
+
+        $nome = (Get-InnerText $doc "//*[local-name()='transp']/*[local-name()='transporta']/*[local-name()='xNome']").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($nome)) {
+            [void]$set.Add($nome)
+        }
+    }
+
+    $transportadoras = @($set | Sort-Object)
+
+    return [ordered]@{
+        ok = $true
+        total = $transportadoras.Count
+        transportadoras = $transportadoras
+        xmlBaseDir = $xmlBaseDir
+    }
+}
+
 function Write-JsonResponse($context, [int]$statusCode, $payload) {
     $response = $context.Response
     $response.StatusCode = $statusCode
@@ -246,6 +277,18 @@ while ($listener.IsListening) {
         continue
     }
 
+    if ($request.HttpMethod -eq 'GET' -and $path -eq '/api/transportadoras') {
+        $resultado = Get-TransportadorasFromXmlFolder
+
+        if ($resultado -and $resultado.erro) {
+            Write-JsonResponse $context 500 $resultado
+            continue
+        }
+
+        Write-JsonResponse $context 200 $resultado
+        continue
+    }
+
     if ($request.HttpMethod -eq 'GET' -and $path.StartsWith('/api/nf/')) {
         $numero = [System.Uri]::UnescapeDataString($path.Substring('/api/nf/'.Length)).Trim()
         if ([string]::IsNullOrWhiteSpace($numero)) {
@@ -255,7 +298,7 @@ while ($listener.IsListening) {
 
         $resultado = Find-NFInXmlFolder $numero
 
-        if ($resultado -and $resultado.ContainsKey('erro')) {
+        if ($resultado -and $resultado.erro) {
             Write-JsonResponse $context 500 $resultado
             continue
         }

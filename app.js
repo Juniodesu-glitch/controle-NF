@@ -46,6 +46,7 @@ const dadosSimulados = {
 };
 
 const runtimeConfig = (typeof window !== 'undefined' && window.__APP_CONFIG__) ? window.__APP_CONFIG__ : {};
+const enableXmlTransportadoraFallback = Boolean(runtimeConfig.enableXmlTransportadoraFallback);
 
 const supabaseConfig = {
     url: runtimeConfig.supabaseUrl || 'https://ttxobirrlaetnnnpalfk.supabase.co',
@@ -2597,7 +2598,8 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
 
     const agora = Date.now();
     const cacheAindaValido = (agora - appState.cache.transportadorasFaturistaAtualizadoEm) < 120000;
-    if (!force && cacheAindaValido && appState.cache.transportadorasFaturistaXml.length > 0) {
+    // Respeita o TTL mesmo quando nao houver transportadoras, para evitar loop de loading.
+    if (!force && cacheAindaValido) {
         return;
     }
 
@@ -2606,8 +2608,8 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
         // Fonte principal compartilhada por todas as maquinas/dispositivos.
         let transportadoras = await buscarTransportadorasNoSupabase();
 
-        // Fallback 1: endpoint XML local, quando a sincronizacao de banco ainda nao ocorreu.
-        if (!Array.isArray(transportadoras) || transportadoras.length === 0) {
+        // Fallback opcional: endpoint XML local (somente quando explicitamente habilitado por config).
+        if (enableXmlTransportadoraFallback && (!Array.isArray(transportadoras) || transportadoras.length === 0)) {
             transportadoras = await buscarTransportadorasNoXML();
         }
 
@@ -2621,6 +2623,12 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
         appState.cache.transportadorasFaturistaXml = transportadoras;
         appState.cache.transportadorasFaturistaAtualizadoEm = Date.now();
 
+    } catch (error) {
+        console.warn('[Exportacao] Falha ao atualizar transportadoras do faturista via XML:', error?.message || error);
+    } finally {
+        appState.cache.carregandoTransportadorasFaturista = false;
+
+        // Garante que o indicador "Carregando..." seja removido apos concluir (com sucesso ou erro).
         if (
             appState.currentPage === 'dashboard' &&
             appState.currentUser &&
@@ -2628,10 +2636,6 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
         ) {
             renderizar();
         }
-    } catch (error) {
-        console.warn('[Exportacao] Falha ao atualizar transportadoras do faturista via XML:', error?.message || error);
-    } finally {
-        appState.cache.carregandoTransportadorasFaturista = false;
     }
 }
 
@@ -2776,7 +2780,7 @@ function renderizarFaturista() {
                                 <option value="" ${appState.filtros.transportadoraFaturista ? '' : 'selected'}>Selecione a transportadora</option>
                                 ${transportadorasDisponiveis.map((t) => `<option value="${t}" ${appState.filtros.transportadoraFaturista === t ? 'selected' : ''}>${t}</option>`).join('')}
                             </select>
-                            ${appState.cache.carregandoTransportadorasFaturista ? '<p style="color: var(--text-secondary); font-size: 12px; margin-top: 6px;">Carregando transportadoras a partir das NFs (XML)...</p>' : ''}
+                            ${appState.cache.carregandoTransportadorasFaturista ? '<p style="color: var(--text-secondary); font-size: 12px; margin-top: 6px;">Carregando transportadoras a partir do banco de dados...</p>' : ''}
                         </div>
                         <button class="btn btn-primary" style="min-height:44px;" onclick="gerarPlanilhaFaturistaExcel()">
                             📊 Exportar Planilha Faturista
