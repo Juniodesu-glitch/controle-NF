@@ -228,6 +228,27 @@ function listarTransportadorasNoDiretorio() {
   return Array.from(transportadoras).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
+function listarNFsNoDiretorio() {
+  const arquivosXml = listarArquivosXmlRecursivo(XML_BASE_DIR);
+  const nfs = [];
+
+  for (const arquivo of arquivosXml) {
+    let xml;
+    try {
+      xml = fs.readFileSync(arquivo, 'utf8');
+    } catch (error) {
+      continue;
+    }
+
+    const dados = extrairDadosDoXml(xml, arquivo);
+    if (dados && dados.numeroNF && dados.numeroNF !== '0') {
+      nfs.push(dados);
+    }
+  }
+
+  return nfs;
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
@@ -276,6 +297,23 @@ const server = http.createServer((req, res) => {
       ok: true,
       total: transportadoras.length,
       transportadoras,
+    });
+  }
+
+  if (url.pathname === '/api/nfs' && req.method === 'GET') {
+    if (!fs.existsSync(XML_BASE_DIR)) {
+      return sendJson(res, 500, {
+        error: 'Diretorio de XML nao encontrado',
+        xmlBaseDir: XML_BASE_DIR,
+      });
+    }
+
+    const nfs = listarNFsNoDiretorio();
+    return sendJson(res, 200, {
+      ok: true,
+      total: nfs.length,
+      nfs,
+      xmlBaseDir: XML_BASE_DIR,
     });
   }
 

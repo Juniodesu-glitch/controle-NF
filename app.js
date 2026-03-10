@@ -13,7 +13,7 @@ const appState = {
     bipagensExpedicao: [],
     solicitacoes: [],
     usuarios: [],
-    xmlApiBaseUrls: ['http://127.0.0.1:8787', 'http://localhost:8787'],
+    xmlApiBaseUrls: ['http://127.0.0.1:8788', 'http://localhost:8788', 'http://127.0.0.1:8787', 'http://localhost:8787'],
     xmlServiceStatus: {
         indisponivel: false,
         ultimoAviso: 0,
@@ -1385,6 +1385,39 @@ async function buscarTransportadorasNoXML() {
     return [];
 }
 
+async function buscarNfsNoXML() {
+    const endpoints = Array.isArray(appState.xmlApiBaseUrls) && appState.xmlApiBaseUrls.length > 0
+        ? appState.xmlApiBaseUrls
+        : ['http://127.0.0.1:8787'];
+
+    for (const baseUrl of endpoints) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        try {
+            const response = await fetch(`${baseUrl}/api/nfs`, {
+                method: 'GET',
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+            if (!response.ok) continue;
+
+            const payload = await response.json();
+            const nfs = Array.isArray(payload?.nfs) ? payload.nfs : [];
+            if (nfs.length > 0) {
+                appState.xmlServiceStatus.indisponivel = false;
+            }
+            return nfs;
+        } catch (error) {
+            clearTimeout(timeoutId);
+            continue;
+        }
+    }
+
+    return [];
+}
+
 async function buscarTransportadorasNoSupabase() {
     try {
         const rows = await supabaseRequest(
@@ -2515,7 +2548,7 @@ function setFiltroTransportadoraFaturista(valor) {
     renderizar();
 }
 
-async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
+async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFallbackXml = false) {
     const toNumber = (valor) => {
         const n = Number(valor);
         return Number.isFinite(n) ? n : 0;
@@ -2532,6 +2565,36 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
         const status = String(nf.status || '').trim().toLowerCase();
         return status !== 'expedida' && status !== 'entregue';
     });
+
+    if (incluirFallbackXml) {
+        const nfsXml = await buscarNfsNoXML();
+        if (Array.isArray(nfsXml) && nfsXml.length > 0) {
+            const existentes = new Set(notasCandidatas.map((n) => normalizarNumeroNf(n.numero)));
+
+            for (const row of nfsXml) {
+                const numero = normalizarNumeroNf(row?.numeroNF || row?.numero_nf || row?.numero);
+                if (!numero || existentes.has(numero)) continue;
+
+                notasCandidatas.push({
+                    id: Math.floor(Math.random() * 1_000_000_000),
+                    numero,
+                    serie: String(row?.serie || '1'),
+                    cliente: String(row?.cliente || 'Cliente não informado'),
+                    transportadora: String(row?.transportadora || 'Não informada'),
+                    artigo: String(row?.artigo || '-'),
+                    pedido: String(row?.pedido || '-'),
+                    quantidadeItens: Number(row?.quantidadeItens ?? row?.quantidade_itens ?? 0),
+                    metros: Number(row?.metros ?? 0),
+                    pesoBruto: Number(row?.pesoBruto ?? row?.peso_bruto ?? 0),
+                    valor: String(row?.valorTotal ?? row?.valor_total ?? '0.00'),
+                    status: 'pendente',
+                    dataEmissao: String(row?.dataEmissao || row?.data_emissao || ''),
+                    origemXml: String(row?.origemXml || row?.arquivo || ''),
+                });
+                existentes.add(numero);
+            }
+        }
+    }
 
     const linhas = [];
 
@@ -2550,7 +2613,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
 
         // Fallback opcional para XML local apenas quando o banco nao tiver dados completos.
         const faltaCampos = !transportadora || !dataNfRaw || !pedido || !artigo;
-        if (faltaCampos && numeroNf) {
+        if (incluirFallbackXml && faltaCampos && numeroNf) {
             const dadosNf = await buscarDadosNFNoXML(numeroNf);
             if (dadosNf && dadosNf.encontrada) {
                 artigo = String(dadosNf.artigo ?? artigo);
@@ -2658,7 +2721,7 @@ async function gerarPlanilhaFaturistaExcel() {
         return;
     }
 
-    const linhas = await montarLinhasExportacaoFaturista(transportadoraFiltro);
+    const linhas = await montarLinhasExportacaoFaturista(transportadoraFiltro, true);
     if (linhas.length === 0) {
         alert('❌ Nenhuma NF disponível para a transportadora selecionada.');
         return;

@@ -1,6 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
 $port = 8787
+if (-not [string]::IsNullOrWhiteSpace($env:NF_XML_PORT)) {
+    $parsedPort = 0
+    if ([int]::TryParse($env:NF_XML_PORT, [ref]$parsedPort) -and $parsedPort -gt 0) {
+        $port = $parsedPort
+    }
+}
 
 function Resolve-XmlBaseDir {
     $defaultExactPath = 'C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app'
@@ -231,6 +237,35 @@ function Get-TransportadorasFromXmlFolder {
     }
 }
 
+function Get-NFsFromXmlFolder {
+    if (-not (Test-Path -LiteralPath $xmlBaseDir)) {
+        return @{ erro = 'Diretorio de XML nao encontrado'; xmlBaseDir = $xmlBaseDir }
+    }
+
+    $xmlFiles = Get-ChildItem -LiteralPath $xmlBaseDir -Filter *.xml -Recurse -File -ErrorAction SilentlyContinue
+    $nfs = @()
+
+    foreach ($file in $xmlFiles) {
+        try {
+            [xml]$doc = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+        } catch {
+            continue
+        }
+
+        $dados = Build-NFData $doc $file.FullName
+        if ($dados -and $dados.numeroNF -and $dados.numeroNF -ne '0') {
+            $nfs += $dados
+        }
+    }
+
+    return [pscustomobject]@{
+        ok = $true
+        total = @($nfs).Count
+        nfs = @($nfs)
+        xmlBaseDir = $xmlBaseDir
+    }
+}
+
 function Write-JsonResponse($context, [int]$statusCode, $payload) {
     $response = $context.Response
     $response.StatusCode = $statusCode
@@ -279,6 +314,18 @@ while ($listener.IsListening) {
 
     if ($request.HttpMethod -eq 'GET' -and $path -eq '/api/transportadoras') {
         $resultado = Get-TransportadorasFromXmlFolder
+
+        if ($resultado -and $resultado.erro) {
+            Write-JsonResponse $context 500 $resultado
+            continue
+        }
+
+        Write-JsonResponse $context 200 $resultado
+        continue
+    }
+
+    if ($request.HttpMethod -eq 'GET' -and $path -eq '/api/nfs') {
+        $resultado = Get-NFsFromXmlFolder
 
         if ($resultado -and $resultado.erro) {
             Write-JsonResponse $context 500 $resultado
