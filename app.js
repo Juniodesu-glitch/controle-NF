@@ -1532,7 +1532,7 @@ async function integrarNfsXmlNoAppESupabase(nfsXml) {
 async function buscarTransportadorasNoSupabase() {
     try {
         const rows = await supabaseRequest(
-            `${supabaseConfig.tables.nfs}?select=transportadora&order=transportadora.asc&limit=5000`
+            `${supabaseConfig.tables.nfs}?select=transportadora&status=not.in.(expedida,entregue)&order=transportadora.asc&limit=5000`
         ).catch(() => []);
 
         if (!Array.isArray(rows)) return [];
@@ -1596,7 +1596,7 @@ function biparNota(numeroNF, dataHora, dataHoraManual, tipo) {
     }
     
     if (!nota) {
-        alert('❌ Nota fiscal não encontrada! Faça o faturamento antes da expedição.');
+        alert('❌ Nota fiscal não encontrada no sistema. Verifique se o XML desta NF foi importado para o banco de dados Supabase.');
         return false;
     }
 
@@ -2862,6 +2862,10 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
     if (!force && cacheAindaValido) {
         const transportadorasLocais = Array.from(new Set(
             appState.notasFiscais
+                .filter((nf) => {
+                    const s = String(nf?.status || '').trim().toLowerCase();
+                    return s !== 'expedida' && s !== 'entregue';
+                })
                 .map((nf) => String(nf?.transportadora || '').trim())
                 .filter((t) => t && t.toLowerCase() !== 'não informada' && t.toLowerCase() !== 'nao informada')
         )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
@@ -3072,6 +3076,44 @@ async function gerarPlanilhaFaturistaExcel() {
 // INTERFACE DO FATURISTA
 // ========================================
 
+/**
+ * Retorna as NFs pendentes para carregamento (FIFO pela data de emissão).
+ * Exclui NFs com status expedida/entregue e as que já foram bipadas pelo conferente.
+ */
+function obterNfsFaturistaPendentes() {
+    const normalizarNumero = (v) => String(v || '').replace(/\D/g, '');
+    const numerosExpedidos = new Set(
+        appState.bipagensExpedicao.map((b) => normalizarNumero(b?.numeroNF)).filter(Boolean)
+    );
+    const filtroTransp = String(appState.filtros.transportadoraFaturista || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    const parseTs = (valor) => {
+        const s = String(valor || '').trim();
+        if (!s) return Number.MAX_SAFE_INTEGER;
+        const ts = new Date(s).getTime();
+        return Number.isFinite(ts) ? ts : Number.MAX_SAFE_INTEGER;
+    };
+
+    return appState.notasFiscais
+        .filter((nf) => {
+            const numero = normalizarNumero(nf.numero);
+            if (!numero) return false;
+            const status = String(nf.status || '').trim().toLowerCase();
+            if (status === 'expedida' || status === 'entregue') return false;
+            if (numerosExpedidos.has(numero)) return false;
+            if (filtroTransp) {
+                const transpNf = String(nf.transportadora || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (!transpNf.includes(filtroTransp) && !filtroTransp.includes(transpNf)) return false;
+            }
+            return true;
+        })
+        .sort((a, b) => {
+            const tsA = parseTs(a.dataEmissao);
+            const tsB = parseTs(b.dataEmissao);
+            if (tsA !== tsB) return tsA - tsB;
+            return String(a.numero).localeCompare(String(b.numero), 'pt-BR', { numeric: true });
+        });
+}
+
 function renderizarFaturista() {
     void atualizarTransportadorasFaturistaDoXml();
 
@@ -3080,106 +3122,128 @@ function renderizarFaturista() {
         appState.filtros.transportadoraFaturista = '';
     }
 
+    const nfsPendentes = obterNfsFaturistaPendentes();
+
+    const escH = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const fmtNum = (v) => {
+        const n = Number(v || 0);
+        return Number.isFinite(n) ? new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) : '0,00';
+    };
+    const fmtData = (v) => {
+        const s = String(v || '').trim();
+        if (!s) return '-';
+        // Formato YYYY-MM-DD ou ISO: converte sem timezone shift
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+            const [y, m, d] = s.split('-');
+            return `${d}/${m}/${y}`;
+        }
+        const dt = new Date(s);
+        if (!Number.isFinite(dt.getTime())) return s;
+        return dt.toLocaleDateString('pt-BR');
+    };
+
+    const linhasTabela = nfsPendentes.length === 0
+        ? `<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-secondary);">
+                ${appState.filtros.transportadoraFaturista
+                    ? 'Nenhuma NF pendente para esta transportadora.'
+                    : 'Nenhuma NF pendente no momento. Verifique se os XMLs foram importados para o Supabase.'}
+           </td></tr>`
+        : nfsPendentes.map((nf, i) => `
+            <tr style="background:${i % 2 === 0 ? 'var(--bg-card,#16161e)' : 'var(--bg-secondary,#1e1e2e)'};">
+                <td style="padding:6px 8px;text-align:center;color:var(--text-secondary);white-space:nowrap;">${escH(fmtData(nf.dataEmissao))}</td>
+                <td style="padding:6px 8px;text-align:center;font-weight:700;color:#fff200;white-space:nowrap;">${escH(nf.numero)}</td>
+                <td style="padding:6px 8px;text-align:left;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.cliente)}</td>
+                <td style="padding:6px 8px;text-align:left;color:var(--text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.artigo)}</td>
+                <td style="padding:6px 8px;text-align:center;color:var(--text-secondary);">${escH(nf.pedido)}</td>
+                <td style="padding:6px 8px;text-align:left;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.transportadora)}</td>
+                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.metros)}</td>
+                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.quantidadeItens)}</td>
+                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.pesoBruto)}</td>
+                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.valor)}</td>
+            </tr>
+        `).join('');
+
     return `
         <div class="dashboard-container">
             <div class="dashboard-content">
                 <div class="flex justify-between items-center mb-4">
                     <div>
                         <h1 class="dashboard-title">Faturista</h1>
-                        <p style="color: var(--text-secondary);">${appState.currentUser.nome}</p>
+                        <p style="color: var(--text-secondary);">${escH(appState.currentUser.nome)}</p>
                     </div>
                     <div style="display: flex; gap: 8px;">
-                        <button class="btn btn-primary" onclick="abrirConfiguracao()">
-                            ⚙️ Configuração
-                        </button>
-                        <button class="btn btn-secondary" onclick="fazerLogout()">
-                            🚪 Sair
-                        </button>
+                        <button class="btn btn-primary" onclick="abrirConfiguracao()">⚙️ Configuração</button>
+                        <button class="btn btn-secondary" onclick="fazerLogout()">🚪 Sair</button>
                     </div>
                 </div>
 
+                <!-- Filtro de transportadora + botões de ação -->
                 <div class="bipagem-card" style="margin-bottom: 16px;">
-                    <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
-                        <div style="min-width:280px; flex:1;">
-                            <label class="form-label">Filtrar por Transportadora</label>
+                    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+                        <div style="min-width:260px; flex:1;">
+                            <label class="form-label">🚛 Transportadora</label>
                             <select
                                 class="form-select"
                                 onchange="setFiltroTransportadoraFaturista(this.value)"
                                 style="width:100%;"
                             >
-                                <option value="" ${appState.filtros.transportadoraFaturista ? '' : 'selected'}>Selecione a transportadora</option>
-                                ${transportadorasDisponiveis.map((t) => `<option value="${t}" ${appState.filtros.transportadoraFaturista === t ? 'selected' : ''}>${t}</option>`).join('')}
+                                <option value="" ${!appState.filtros.transportadoraFaturista ? 'selected' : ''}>Todas as transportadoras</option>
+                                ${transportadorasDisponiveis.map((t) => `<option value="${t}" ${appState.filtros.transportadoraFaturista === t ? 'selected' : ''}>${escH(t)}</option>`).join('')}
                             </select>
-                            ${appState.cache.carregandoTransportadorasFaturista ? '<p style="color: var(--text-secondary); font-size: 12px; margin-top: 6px;">Carregando transportadoras a partir do banco de dados...</p>' : ''}
+                            ${appState.cache.carregandoTransportadorasFaturista ? '<p style="color:var(--text-secondary);font-size:12px;margin-top:6px;">⏳ Carregando transportadoras...</p>' : ''}
                         </div>
-                        <button class="btn btn-primary" style="min-height:44px;" onclick="gerarPlanilhaFaturistaExcel()">
-                            📊 Exportar Planilha Faturista
-                        </button>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <button
+                                class="btn btn-primary"
+                                style="min-height:44px;"
+                                onclick="gerarPlanilhaFaturistaExcel()"
+                                title="Baixa a planilha de carregamento da transportadora selecionada (FIFO)"
+                            >📊 Baixar Planilha de Carregamento</button>
+                            <button
+                                class="btn btn-secondary"
+                                style="min-height:44px;"
+                                onclick="atualizarTransportadorasFaturistaDoXml(true).then(()=>carregarDadosSupabase()).then(()=>renderizar())"
+                                title="Sincroniza novos XMLs da pasta e atualiza a lista"
+                            >🔄 Atualizar</button>
+                        </div>
                     </div>
-                    <p style="color: var(--text-secondary); font-size: 12px; margin-top: 10px;">
-                        A exportação segue FIFO pela Data NF (mais antiga para mais nova) e não remove NFs não bipadas na expedição.
+                    <p style="color:var(--text-secondary);font-size:12px;margin-top:10px;">
+                        ℹ️ Ordem FIFO — NF com data de emissão mais antiga aparece primeiro. NFs expedidas pelo conferente são removidas automaticamente.
+                        ${appState.xmlServiceStatus.indisponivel ? '<br><span style="color:#f87171;">⚠️ Serviço XML local indisponível. Exibindo dados do Supabase.</span>' : ''}
                     </p>
                 </div>
 
-                <div class="bipagem-container">
-                    <div class="bipagem-card">
-                        <div class="bipagem-header">
-                            <div class="bipagem-icon">📊</div>
-                            <h2 class="bipagem-title">Bipar Nota Fiscal</h2>
-                        </div>
-
-                        <div class="bipagem-input-group">
-                            <label class="form-label">Código de Barras / Número da NF</label>
-                            <input 
-                                type="text" 
-                                class="bipagem-input" 
-                                id="codigoBarras" 
-                                placeholder="Escaneie o código de barras ou digite o número da NF"
-                                oninput="agendarBipagemAutomatica('faturamento')"
-                                onkeydown="if(event.key==='Enter'){event.preventDefault();handleBiparFaturamento();}"
-                                autofocus
-                            >
-                        </div>
-
-                        <div class="checkbox-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="checkbox-input" id="usarDataManual" onchange="toggleDataManual()">
-                                Usar data e hora manual
-                            </label>
-
-                            <div id="dataManualGroup" style="display: none; margin-top: 12px;">
-                                <label class="form-label">Data e Hora</label>
-                                <input type="datetime-local" class="datetime-input" id="dataHora">
-                            </div>
-
-                            <div id="dataAutomaticaGroup" style="margin-top: 12px; color: var(--text-secondary); font-size: 12px;">
-                                🕐 Usando data e hora do sistema
-                            </div>
-                        </div>
-
-                        <button class="btn btn-primary" style="width: 100%; min-height: 48px;" onclick="handleBiparFaturamento()">
-                            📊 Bipar Nota Fiscal
-                        </button>
+                <!-- Tabela FIFO de NFs pendentes para carregamento -->
+                <div class="bipagem-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
+                        <h3 style="color:var(--text-primary); margin:0; font-size:16px;">
+                            📋 NFs Pendentes para Carregamento
+                            ${appState.filtros.transportadoraFaturista ? ` — <span style="color:var(--accent-color,#7c3aed);">${escH(appState.filtros.transportadoraFaturista)}</span>` : ''}
+                        </h3>
+                        <span style="background:var(--badge-bg,#2a2a3e);color:var(--text-secondary);border-radius:12px;padding:4px 12px;font-size:13px;">
+                            ${nfsPendentes.length} NF${nfsPendentes.length !== 1 ? 's' : ''}
+                        </span>
                     </div>
-
-                    <div id="ultimaBipagem" class="hidden"></div>
-
-                    <div class="bipagem-card">
-                        <h3 style="color: var(--text-primary); margin-bottom: 16px;">Histórico de Bipagens</h3>
-                        <div class="history-list">
-                            ${appState.bipagensFaturamento.length === 0 ? 
-                                '<p style="color: var(--text-secondary);">Nenhuma bipagem registrada</p>' :
-                                appState.bipagensFaturamento.map(b => `
-                                    <div class="history-item">
-                                        <div class="history-item-info">
-                                            <p>NF #${b.numeroNF}</p>
-                                            <p>${b.criadoEm}</p>
-                                        </div>
-                                        <span class="badge badge-faturada">Faturada</span>
-                                    </div>
-                                `).join('')
-                            }
-                        </div>
+                    <div style="overflow-x:auto;">
+                        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                            <thead>
+                                <tr style="background:var(--bg-secondary,#1e1e2e);">
+                                    <th style="padding:8px;text-align:center;border-bottom:2px solid var(--border-color,#333);white-space:nowrap;">DATA NF</th>
+                                    <th style="padding:8px;text-align:center;border-bottom:2px solid var(--border-color,#333);">NF</th>
+                                    <th style="padding:8px;text-align:left;border-bottom:2px solid var(--border-color,#333);">CLIENTE</th>
+                                    <th style="padding:8px;text-align:left;border-bottom:2px solid var(--border-color,#333);">ARTIGO</th>
+                                    <th style="padding:8px;text-align:center;border-bottom:2px solid var(--border-color,#333);">PEDIDO</th>
+                                    <th style="padding:8px;text-align:left;border-bottom:2px solid var(--border-color,#333);">TRANSPORTADORA</th>
+                                    <th style="padding:8px;text-align:right;border-bottom:2px solid var(--border-color,#333);">METROS</th>
+                                    <th style="padding:8px;text-align:right;border-bottom:2px solid var(--border-color,#333);">PÇS</th>
+                                    <th style="padding:8px;text-align:right;border-bottom:2px solid var(--border-color,#333);">PESO (kg)</th>
+                                    <th style="padding:8px;text-align:right;border-bottom:2px solid var(--border-color,#333);">VALOR (R$)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${linhasTabela}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -3344,7 +3408,7 @@ function toggleDataManualExp() {
     }
 }
 
-function handleBiparExpedicao() {
+async function handleBiparExpedicao() {
     const codigoBarras = document.getElementById('codigoBarrasExp').value;
     const numeroExtraido = extrairNumeroNF(codigoBarras);
     const usarDataManual = document.getElementById('usarDataManualExp').checked;
@@ -3353,6 +3417,19 @@ function handleBiparExpedicao() {
     if (!numeroExtraido) {
         alert('Digite o código de barras!');
         return;
+    }
+
+    // Se a NF não está no cache local, tenta buscar no Supabase e no XML local
+    // (isso acontece quando a NF foi importada pelo Python após o último sync)
+    if (!buscarNotaPorCodigo(numeroExtraido)) {
+        let dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
+        if (!dadosNF) {
+            dadosNF = await buscarDadosNFNoXML(numeroExtraido);
+        }
+        if (dadosNF && dadosNF.encontrada) {
+            let nota = criarNotaAPartirDaLeitura(numeroExtraido);
+            aplicarDadosXMLNaNota(nota, dadosNF);
+        }
     }
 
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'expedicao')) {
