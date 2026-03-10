@@ -3356,48 +3356,37 @@ async function handleBiparFaturamento() {
         return;
     }
 
-    // ─── 1. Busca e valida no XML da pasta (fonte primária obrigatória) ───────
+    // ─── 1. Tenta serviço XML local (só funciona na mesma máquina da pasta) ──
     let dadosNF = await buscarDadosNFNoXML(numeroExtraido);
-    let fonteXml = dadosNF && dadosNF.encontrada;
+    const fonteXml = dadosNF && dadosNF.encontrada;
 
-    // ─── 2. Fallback: Supabase — somente se o serviço XML estiver indisponível
-    //        E o banco já tiver todos os campos preenchidos desta NF ────────────
+    // ─── 2. Fallback: Supabase — sempre tentado se XML não trouxe resultado ──
+    //        Isso garante que o app funcione pelo Vercel quando o Python
+    //        importer já subiu os dados da pasta para o banco.
     if (!fonteXml) {
-        if (appState.xmlServiceStatus.indisponivel) {
-            const dadosBanco = await buscarDadosNFNoSupabase(numeroExtraido);
-            const clienteCompleto = dadosBanco && dadosBanco.cliente
-                && dadosBanco.cliente !== 'Cliente nao informado'
-                && dadosBanco.cliente !== 'Cliente não informado';
-            const transpCompleta = dadosBanco && dadosBanco.transportadora
-                && dadosBanco.transportadora !== 'Nao informada'
-                && dadosBanco.transportadora !== 'Não informada';
-            if (dadosBanco && dadosBanco.encontrada && clienteCompleto && transpCompleta) {
-                dadosNF = dadosBanco;
-            }
+        const dadosBanco = await buscarDadosNFNoSupabase(numeroExtraido);
+        if (dadosBanco && dadosBanco.encontrada) {
+            dadosNF = dadosBanco;
         }
     }
 
-    // ─── 3. Bloqueia se não há dados válidos ─────────────────────────────────
+    // ─── 3. Bloqueia somente se não achou em nenhuma das duas fontes ─────────
     if (!dadosNF || !dadosNF.encontrada) {
-        if (appState.xmlServiceStatus.indisponivel) {
-            alert(
-                `❌ NF ${numeroExtraido} não pôde ser validada.\n\n` +
-                'O serviço XML local está indisponível e a NF não foi encontrada no banco com dados completos.\n\n' +
-                'Verifique se o arquivo "iniciar-aplicativo.bat" está rodando neste computador.'
-            );
-        } else {
-            alert(
-                `❌ NF ${numeroExtraido} não encontrada na pasta XML.\n\n` +
-                'O XML desta NF não está na pasta de origem (nf-app).\n' +
-                'Certifique-se de que o arquivo XML foi copiado para a pasta antes de bipar.'
-            );
-        }
+        alert(
+            `❌ NF ${numeroExtraido} não encontrada em nenhuma fonte.\n\n` +
+            'Verifique:\n' +
+            '• Se o XML desta NF está na pasta nf-app\n' +
+            '• Se o importador Python está rodando (run_importer.bat)\n' +
+            (appState.xmlServiceStatus.indisponivel
+                ? '• O serviço XML local está indisponível — acesse o app no computador com a pasta ou garanta que o importador Python enviou os dados ao Supabase.'
+                : '• O arquivo XML pode não ter sido copiado para a pasta nf-app ainda.')
+        );
         return;
     }
 
-    // ─── 4. Valida que o número extraído do código de barras bate com o XML ──
+    // ─── 4. Valida consistência número bipado × número no XML (só com fonte XML) ──
     const numeroNoXml = String(dadosNF.numeroNF || '').replace(/\D/g, '');
-    if (numeroNoXml && numeroNoXml !== numeroExtraido) {
+    if (fonteXml && numeroNoXml && numeroNoXml !== numeroExtraido) {
         alert(
             `⚠️ Inconsistência detectada.\n\n` +
             `Número bipado : ${numeroExtraido}\n` +
@@ -3407,19 +3396,27 @@ async function handleBiparFaturamento() {
         return;
     }
 
-    // ─── 5. Avisa (sem bloquear) se cliente estiver em branco no XML ─────────
+    // ─── 5. Avisa (sem bloquear) se dados essenciais estiverem incompletos ───
     const clienteOk = dadosNF.cliente
         && dadosNF.cliente !== 'Cliente nao informado'
         && dadosNF.cliente !== 'Cliente não informado';
-    if (!clienteOk && fonteXml) {
+    const transpOk = dadosNF.transportadora
+        && dadosNF.transportadora !== 'Nao informada'
+        && dadosNF.transportadora !== 'Não informada';
+    if (!clienteOk || !transpOk) {
+        const motivos = [
+            !clienteOk ? '• Cliente não informado no XML' : '',
+            !transpOk  ? '• Transportadora não informada no XML' : '',
+        ].filter(Boolean).join('\n');
         const continuar = confirm(
-            `⚠️ NF ${numeroExtraido} encontrada no XML, mas o campo "Cliente" está em branco ou ausente.\n\n` +
-            'O XML pode estar incompleto. Deseja prosseguir mesmo assim?'
+            `⚠️ NF ${numeroExtraido} encontrada, mas com dados incompletos:\n${motivos}\n\n` +
+            'O importador Python pode ainda não ter processado o XML completo.\n\n' +
+            'Deseja prosseguir mesmo assim?'
         );
         if (!continuar) return;
     }
 
-    // ─── 6. Aplica dados do XML na nota e registra bipagem ───────────────────
+    // ─── 6. Aplica dados e registra bipagem ──────────────────────────────────
     let resultado = buscarNotaPorCodigo(numeroExtraido);
     let nota = resultado ? resultado.nota : criarNotaAPartirDaLeitura(numeroExtraido);
 
