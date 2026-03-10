@@ -86,6 +86,12 @@ appState.cache = {
     transportadorasFaturistaAtualizadoEm: 0,
 };
 
+appState.xmlSync = {
+    emAndamento: false,
+    ultimoSyncEm: 0,
+    intervaloMinMs: 120000,
+};
+
 async function sincronizarDadosEmSegundoPlano() {
     if (!appState.currentUser || appState.sync.emAndamento) return;
 
@@ -971,6 +977,7 @@ async function inicializarDados() {
     appState.bipagensExpedicao = [];
 
     await carregarDadosSupabase();
+    await sincronizarNfsXmlNoFluxo(true).catch(() => null);
 }
 
 // ========================================
@@ -1417,6 +1424,23 @@ async function buscarNfsNoXML() {
     }
 
     return [];
+}
+async function sincronizarNfsXmlNoFluxo(force = false) {
+    if (appState.xmlSync.emAndamento) return;
+
+    const agora = Date.now();
+    const dentroDaJanela = (agora - appState.xmlSync.ultimoSyncEm) < appState.xmlSync.intervaloMinMs;
+    if (!force && dentroDaJanela) return;
+
+    appState.xmlSync.emAndamento = true;
+    try {
+        await buscarNfsNoXML();
+        appState.xmlSync.ultimoSyncEm = Date.now();
+    } catch (error) {
+        // Mantem silencioso: o fallback de tela segue usando Supabase sem bloquear o usuario.
+    } finally {
+        appState.xmlSync.emAndamento = false;
+    }
 }
 
 async function integrarNfsXmlNoAppESupabase(nfsXml) {
@@ -2600,11 +2624,39 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
         const digitos = String(pedido || '').replace(/\D/g, '');
         return digitos ? digitos.slice(-3) : '';
     };
+    const normalizarStatus = (valor) => String(valor || '').trim().toLowerCase();
+    const parseDataParaFifo = (valor) => {
+        const bruto = String(valor || '').trim();
+        if (!bruto) return Number.MAX_SAFE_INTEGER;
+
+        const formatoBr = bruto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (formatoBr) {
+            const iso = `${formatoBr[3]}-${formatoBr[2]}-${formatoBr[1]}`;
+            const dtBr = new Date(`${iso}T00:00:00`);
+            const tsBr = dtBr.getTime();
+            return Number.isFinite(tsBr) ? tsBr : Number.MAX_SAFE_INTEGER;
+        }
+
+        const dt = new Date(bruto);
+        const ts = dt.getTime();
+        return Number.isFinite(ts) ? ts : Number.MAX_SAFE_INTEGER;
+    };
+
+    const numerosExpedidos = new Set(
+        appState.bipagensExpedicao
+            .map((b) => normalizarNumeroNf(b?.numeroNF))
+            .filter(Boolean)
+    );
 
     const notasCandidatas = appState.notasFiscais.filter((nf) => {
         const numero = normalizarNumeroNf(nf.numero);
         if (!numero) return false;
-        // Regra de exportacao: considera todas as NFs conhecidas e filtra pela transportadora selecionada.
+
+        const status = normalizarStatus(nf.status);
+        if (status === 'expedida' || status === 'entregue') return false;
+        if (numerosExpedidos.has(numero)) return false;
+
+        // Regra de exportacao: planilha de carregamento nao inclui NFs ja expedidas.
         return true;
     });
 
@@ -2624,6 +2676,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             for (const row of nfsXml) {
                 const numero = normalizarNumeroNf(row?.numeroNF || row?.numero_nf || row?.numero);
                 if (!numero || existentes.has(numero)) continue;
+                if (numerosExpedidos.has(numero)) continue;
 
                 notasCandidatas.push({
                     id: Math.floor(Math.random() * 1_000_000_000),
@@ -2708,8 +2761,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             continue;
         }
 
-        const dataOrdenacao = new Date(dataNfRaw);
-        const ts = Number.isFinite(dataOrdenacao.getTime()) ? dataOrdenacao.getTime() : Number.MAX_SAFE_INTEGER;
+        const ts = parseDataParaFifo(dataNfRaw);
 
         linhas.push({
             artigo,
@@ -2747,6 +2799,9 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
 
     appState.cache.carregandoTransportadorasFaturista = true;
     try {
+        // Primeiro sincroniza XML para o banco para garantir que o faturista veja as NFs novas da pasta.
+        await sincronizarNfsXmlNoFluxo(force).catch(() => null);
+
         // Fonte principal compartilhada por todas as maquinas/dispositivos.
         let transportadoras = await buscarTransportadorasNoSupabase();
 
