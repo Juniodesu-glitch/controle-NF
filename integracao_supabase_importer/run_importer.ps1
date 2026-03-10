@@ -3,6 +3,10 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
+if ([string]::IsNullOrWhiteSpace($env:NF_SOURCE_DIR)) {
+    $env:NF_SOURCE_DIR = 'C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app'
+}
+
 $logDir = Join-Path $scriptDir 'logs'
 if (-not (Test-Path $logDir)) {
     New-Item -ItemType Directory -Path $logDir | Out-Null
