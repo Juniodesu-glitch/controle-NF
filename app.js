@@ -219,6 +219,25 @@ async function supabaseAuthSignOut() {
     clearAuthSession();
 }
 
+// Renova o access_token usando o refresh_token quando o JWT de 1 hora expira.
+async function supabaseAuthRefresh() {
+    if (!appState.auth.refreshToken) return false;
+    try {
+        const data = await supabaseAuthRequest('token?grant_type=refresh_token', {
+            body: { refresh_token: appState.auth.refreshToken },
+        });
+        if (data && data.access_token) {
+            setAuthSession(data);
+            console.info('[Auth] Token renovado automaticamente.');
+            return true;
+        }
+    } catch (error) {
+        console.warn('[Auth] Falha ao renovar token de acesso:', error?.message || error);
+        clearAuthSession();
+    }
+    return false;
+}
+
 async function garantirPerfilPorAuth(authUser, nomeHint) {
     if (!authUser || !authUser.id || !authUser.email) {
         return null;
@@ -294,16 +313,28 @@ function getSupabaseHeaders() {
 
 async function supabaseRequest(path, options = {}) {
     const method = options.method || 'GET';
-    const headers = {
-        ...getSupabaseHeaders(),
-        ...(options.headers || {}),
+
+    const doFetch = () => {
+        const headers = {
+            ...getSupabaseHeaders(),
+            ...(options.headers || {}),
+        };
+        return fetch(`${supabaseConfig.url}/rest/v1/${path}`, {
+            method,
+            headers,
+            body: options.body ? JSON.stringify(options.body) : undefined,
+        });
     };
 
-    const response = await fetch(`${supabaseConfig.url}/rest/v1/${path}`, {
-        method,
-        headers,
-        body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    let response = await doFetch();
+
+    // Token expirado (JWT de 1h) → renova automaticamente e retenta a requisição.
+    if (response.status === 401 && appState.auth.refreshToken) {
+        const renovado = await supabaseAuthRefresh();
+        if (renovado) {
+            response = await doFetch();
+        }
+    }
 
     if (!response.ok) {
         const erroTexto = await response.text();
@@ -1307,9 +1338,11 @@ async function buscarDadosNFNoSupabase(numeroNF) {
         const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
         if (!numeroNormalizado) return null;
 
+        // Sem .catch() aqui: erros de rede/autenticação devem ser capturados
+        // pelo bloco externo para que não sejam confundidos com "NF não encontrada".
         const rows = await supabaseRequest(
             `${supabaseConfig.tables.nfs}?select=*&numero_nf=eq.${encodeURIComponent(numeroNormalizado)}&limit=1`
-        ).catch(() => []);
+        );
 
         if (!Array.isArray(rows) || rows.length === 0) {
             return null;
@@ -1332,7 +1365,9 @@ async function buscarDadosNFNoSupabase(numeroNF) {
         };
     } catch (error) {
         console.warn('[Supabase] Falha ao buscar NF por numero:', error?.message || error);
-        return null;
+        // Retorna objeto com flag de erro para distinguir "NF não encontrada"
+        // de "falha na consulta ao Supabase" (token expirado, rede, etc.).
+        return { encontrada: false, erroConexao: true };
     }
 }
 
@@ -1864,7 +1899,7 @@ async function gerarRelatorioExpedicaoExcel() {
         if (!precisaEnriquecer) continue;
 
         let dadosNf = await buscarDadosNFNoSupabase(numeroNf);
-        if (!dadosNf) {
+        if (!dadosNf || !dadosNf.encontrada) {
             dadosNf = await buscarDadosNFNoXML(numeroNf);
         }
 
@@ -3363,20 +3398,26 @@ async function handleBiparFaturamento() {
     // ─── 2. Fallback: Supabase — sempre tentado se XML não trouxe resultado ──
     //        Isso garante que o app funcione pelo Vercel quando o Python
     //        importer já subiu os dados da pasta para o banco.
+    let erroConexaoSupabase = false;
     if (!fonteXml) {
         const dadosBanco = await buscarDadosNFNoSupabase(numeroExtraido);
         if (dadosBanco && dadosBanco.encontrada) {
             dadosNF = dadosBanco;
+        } else if (dadosBanco && dadosBanco.erroConexao) {
+            erroConexaoSupabase = true;
         }
     }
 
     // ─── 3. Bloqueia somente se não achou em nenhuma das duas fontes ─────────
     if (!dadosNF || !dadosNF.encontrada) {
+        const msgConexao = erroConexaoSupabase
+            ? '• ⚠️ Falha na consulta ao Supabase (sessão expirada?). Tente sair e entrar novamente.'
+            : '• Se o importador Python está rodando (run_importer.bat)';
         alert(
             `❌ NF ${numeroExtraido} não encontrada em nenhuma fonte.\n\n` +
             'Verifique:\n' +
             '• Se o XML desta NF está na pasta nf-app\n' +
-            '• Se o importador Python está rodando (run_importer.bat)\n' +
+            msgConexao + '\n' +
             (appState.xmlServiceStatus.indisponivel
                 ? '• O serviço XML local está indisponível — acesse o app no computador com a pasta ou garanta que o importador Python enviou os dados ao Supabase.'
                 : '• O arquivo XML pode não ter sido copiado para a pasta nf-app ainda.')
@@ -3577,7 +3618,7 @@ async function handleBiparExpedicao() {
     // (isso acontece quando a NF foi importada pelo Python após o último sync)
     if (!buscarNotaPorCodigo(numeroExtraido)) {
         let dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
-        if (!dadosNF) {
+        if (!dadosNF || !dadosNF.encontrada) {
             dadosNF = await buscarDadosNFNoXML(numeroExtraido);
         }
         if (dadosNF && dadosNF.encontrada) {
