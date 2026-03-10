@@ -119,6 +119,8 @@ function extrairDadosDoXml(xml, arquivo) {
   const transportaSection = getSection(transpSection, 'transporta');
   const totalSection = getSection(xml, 'total');
   const icmsTotSection = getSection(totalSection, 'ICMSTot');
+  const infAdic = getSection(xml, 'infAdic');
+  const infCpl = getFirstTag(infAdic || '', 'infCpl');
 
   // Lê nNF dentro de <ide> para evitar falsos positivos em outras seções do XML
   const numeroNF = normalizarNumeroNF(getFirstTag(ideSection || xml, 'nNF'));
@@ -165,9 +167,7 @@ function extrairDadosDoXml(xml, arquivo) {
     const uCom = (getFirstTag(prod, 'uCom') || '').toUpperCase();
 
     quantidadeItens += qCom;
-    if (uCom.includes('M')) {
-      metros += qCom;
-    }
+    metros += qCom;
   });
 
   if (quantidadeItens === 0) {
@@ -176,7 +176,15 @@ function extrairDadosDoXml(xml, arquivo) {
   }
 
   const artigo = artigos.length > 0 ? artigos[0] : '-';
-  const pedido = pedidos.length > 0 ? pedidos[0] : (getFirstTag(xml, 'xPed') || getFirstTag(xml, 'nPed') || '-');
+  // Pedido: prioriza DADOS ADICIONAIS (infAdic/infCpl) via regex; fallback para xPed/nPed
+  let pedido = '-';
+  if (infCpl) {
+    const pedMatch = infCpl.match(/ped(?:ido)?\s*[:\-#n°.\s]{0,3}([A-Z0-9\-\/]{2,30})/i);
+    if (pedMatch) pedido = pedMatch[1].trim();
+  }
+  if (pedido === '-') {
+    pedido = pedidos.length > 0 ? pedidos[0] : (getFirstTag(xml, 'xPed') || getFirstTag(xml, 'nPed') || '-');
+  }
 
   const pesoBList = getAllTags(xml, 'pesoB');
   let pesoBruto = pesoBList.reduce((acc, item) => acc + toNumber(item), 0);

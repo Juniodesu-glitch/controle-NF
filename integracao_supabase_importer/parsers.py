@@ -141,13 +141,25 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
     if not transportadora:
         transportadora = "Nao informada"
 
-    pedido = (
-        _find_path_text(root, ["NFe", "infNFe", "det", "prod", "xPed"])
-        or _find_path_text(root, ["infNFe", "det", "prod", "xPed"])
-        or _find_first_text(root, "xPed")
-        or _find_first_text(root, "nPed")
-        or "-"
+    # Pedido: prioriza DADOS ADICIONAIS (infAdic/infCpl) com regex; fallback para xPed/nPed
+    inf_cpl = (
+        _find_path_text(root, ["NFe", "infNFe", "infAdic", "infCpl"])
+        or _find_path_text(root, ["infNFe", "infAdic", "infCpl"])
+        or _find_first_text(root, "infCpl")
     )
+    pedido = "-"
+    if inf_cpl:
+        m_ped = re.search(r"ped(?:ido)?\s*[:\-#n°.\s]{0,3}([A-Z0-9\-\/]{2,30})", inf_cpl, re.IGNORECASE)
+        if m_ped:
+            pedido = m_ped.group(1).strip()
+    if pedido == "-":
+        pedido = (
+            _find_path_text(root, ["NFe", "infNFe", "det", "prod", "xPed"])
+            or _find_path_text(root, ["infNFe", "det", "prod", "xPed"])
+            or _find_first_text(root, "xPed")
+            or _find_first_text(root, "nPed")
+            or "-"
+        )
     serie = (
         _find_path_text(root, ["NFe", "infNFe", "ide", "serie"])
         or _find_path_text(root, ["infNFe", "ide", "serie"])
@@ -213,8 +225,7 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
             artigo = descricao
 
         total_qtd += quantidade
-        if unidade.upper().startswith("M"):
-            total_metros += quantidade
+        total_metros += quantidade
 
         itens.append(
             {
@@ -325,7 +336,9 @@ def _jasperprint_texts(root: ET.Element) -> List[str]:
     """Extrai todos os elementos de texto do JasperPrint, ignorando dados base64."""
     result: List[str] = []
     for elem in root.iter():
-        if _local_name(elem.tag) == "text":
+        tag = _local_name(elem.tag)
+        # JasperPrint pode trazer texto em <text> e/ou <textContent>.
+        if tag in ("text", "textContent"):
             t = (elem.text or "").strip()
             # Ignora blobs base64 (strings longas só com chars alfanuméricos)
             if t and len(t) <= 500 and not re.fullmatch(r"[A-Za-z0-9+/=]{60,}", t):
@@ -396,19 +409,32 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
             break
 
     # ── Transportadora ────────────────────────────────────────────────────────
-    # Busca elemento de texto com palavras-chave de empresa transportadora
+    # Localiza o bloco "TRANSPORTADOR(A) E FRETE" e extrai NOME/RAZÃO SOCIAL
     transportadora = "Nao informada"
-    _transp_kw = re.compile(
-        r"\b(?:TRANSPORT(?:E|ES|ADORA)?|LOG[IÍ]STICA|EXPRESSO|CARGAS?|COURIER|FRETE)\b",
-        re.IGNORECASE,
-    )
-    _transp_excl = re.compile(
-        r"\b(?:VOLUME|TRANSPORTAD[OR]|POR CONTA|FRETE POR)\b", re.IGNORECASE
-    )
-    for t in texts:
-        if _transp_kw.search(t) and not _transp_excl.search(t) and len(t.split()) >= 2:
-            transportadora = t
+    transp_sec_idx = None
+    for i, t in enumerate(texts):
+        if re.search(r"\bTRANSPORTAD[OA]R\b", t, re.IGNORECASE) and "POR CONTA" not in t.upper() and len(t) < 60:
+            transp_sec_idx = i
             break
+    if transp_sec_idx is not None:
+        search_end = min(transp_sec_idx + 40, len(texts))
+        for i in range(transp_sec_idx + 1, search_end):
+            t_upper = texts[i].strip().upper()
+            # Rótulo "RAZÃO SOCIAL / NOME" ou "NOME / RAZÃO SOCIAL" indica que o próximo texto é o nome
+            if ("RAZ" in t_upper and "SOC" in t_upper) or ("NOME" in t_upper and "/" in t_upper and len(texts[i]) < 40):
+                for j in range(i + 1, min(i + 6, len(texts))):
+                    candidate = texts[j].strip()
+                    if (
+                        len(candidate) >= 3
+                        and not re.fullmatch(r"[0-9.,/\-\s]+", candidate)
+                        and "FRETE" not in candidate.upper()
+                        and "CNPJ" not in candidate.upper()
+                        and "PESO" not in candidate.upper()
+                    ):
+                        transportadora = candidate
+                        break
+                if transportadora != "Nao informada":
+                    break
 
     # ── Cliente (destinatário) ─────────────────────────────────────────────────
     # Nome da empresa do destinatário: geralmente contém LTDA, S/A, EIRELI, etc.
@@ -461,19 +487,31 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
         "RESERVADO AO FISCO", "DADOS DO PRODUTO / SERVIÇOS",
         "0 - EMITENTE", "1 - EMITENTE",
     }
-    prod_idx = None
+    # Localiza a coluna "DESCRIÇÃO DOS PRODUTOS / SERVIÇOS" (ou "DADOS DO PRODUTO") e
+    # captura o primeiro texto que pareça uma descrição real, filtrando códigos de produto
+    # (textos onde dígitos superam letras, ex.: "2.DP007.101.000530").
+    _descr_start = None
     for i, t in enumerate(texts):
-        if "DADOS DO PRODUTO" in t.upper():
-            prod_idx = i
+        if re.search(r"DESCRI[CÇ][AÃ]O\s+DOS\s+PRODUTOS", t, re.IGNORECASE):
+            _descr_start = i
             break
-    if prod_idx is not None:
-        for j in range(prod_idx + 1, min(prod_idx + 80, len(texts))):
+    if _descr_start is None:
+        for i, t in enumerate(texts):
+            if "DADOS DO PRODUTO" in t.upper():
+                _descr_start = i
+                break
+    if _descr_start is not None:
+        for j in range(_descr_start + 1, min(_descr_start + 80, len(texts))):
             t = texts[j].strip()
+            _alpha = sum(1 for c in t if c.isalpha())
+            _digit = sum(1 for c in t if c.isdigit())
             if (
-                len(t) >= 10
+                len(t) >= 5
                 and t.upper() not in _prod_skip
                 and not re.fullmatch(r"[\d.,/\-]+", t)
                 and not re.fullmatch(r"\d{3,8}", t)
+                and _alpha > _digit          # descrição tem mais letras que dígitos
+                and _alpha >= 4              # mínimo de conteúdo alfabético
             ):
                 artigo = t
                 break
@@ -481,6 +519,32 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
     # ── Quantidade / metros ───────────────────────────────────────────────────
     total_qtd = 0.0
     total_metros = 0.0
+
+    # ── Pedido (número no bloco DADOS ADICIONAIS / INFORMAÇÕES COMPLEMENTARES) ─
+    pedido = "-"
+    dados_adicionais_idx = None
+    for i, t in enumerate(texts):
+        if re.search(r"DADOS\s+ADICIONAIS", t, re.IGNORECASE):
+            dados_adicionais_idx = i
+            break
+    if dados_adicionais_idx is not None:
+        for j in range(dados_adicionais_idx + 1, min(dados_adicionais_idx + 40, len(texts))):
+            t = texts[j].strip()
+            # Padrão inline: "Pedido: 12345" ou "Ped. 12345" na mesma string
+            m_inline = re.search(r"ped(?:ido)?\s*[:\-#n°.\s]{0,3}([A-Z0-9\-\/]{2,30})", t, re.IGNORECASE)
+            if m_inline:
+                pedido = m_inline.group(1).strip()
+                break
+            # Rótulo "PEDIDO" isolado → próximo elemento é o número
+            if re.fullmatch(r"PEDIDO", t, re.IGNORECASE):
+                for k in range(j + 1, min(j + 4, len(texts))):
+                    cand = texts[k].strip()
+                    if re.fullmatch(r"[A-Z0-9\-\/]{2,20}", cand, re.IGNORECASE):
+                        pedido = cand
+                        break
+                if pedido != "-":
+                    break
+
     for i, t in enumerate(texts):
         if t.upper() in ("QUANT", "QUANTIDADE"):
             for j in range(i + 1, min(i + 30, len(texts))):
@@ -496,7 +560,7 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
         "numero_nf": numero_nf,
         "chave_acesso": chave_acesso,
         "serie": "1",
-        "pedido": "-",
+        "pedido": pedido,
         "cliente": cliente,
         "transportadora": transportadora,
         "artigo": artigo,
