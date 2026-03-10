@@ -205,6 +205,29 @@ function buscarNFPorNumero(numeroProcurado) {
   return null;
 }
 
+function listarTransportadorasNoDiretorio() {
+  const arquivosXml = listarArquivosXmlRecursivo(XML_BASE_DIR);
+  const transportadoras = new Set();
+
+  for (const arquivo of arquivosXml) {
+    let xml;
+    try {
+      xml = fs.readFileSync(arquivo, 'utf8');
+    } catch (error) {
+      continue;
+    }
+
+    const transpSection = getSection(xml, 'transp');
+    const transportaSection = getSection(transpSection, 'transporta');
+    const nome = (getFirstTag(transportaSection || transpSection || xml, 'xNome') || '').trim();
+    if (nome) {
+      transportadoras.add(nome);
+    }
+  }
+
+  return Array.from(transportadoras).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
@@ -237,6 +260,22 @@ const server = http.createServer((req, res) => {
       ok: true,
       xmlBaseDir: XML_BASE_DIR,
       timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (url.pathname === '/api/transportadoras' && req.method === 'GET') {
+    if (!fs.existsSync(XML_BASE_DIR)) {
+      return sendJson(res, 500, {
+        error: 'Diretorio de XML nao encontrado',
+        xmlBaseDir: XML_BASE_DIR,
+      });
+    }
+
+    const transportadoras = listarTransportadorasNoDiretorio();
+    return sendJson(res, 200, {
+      ok: true,
+      total: transportadoras.length,
+      transportadoras,
     });
   }
 

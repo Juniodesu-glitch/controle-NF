@@ -1341,6 +1341,60 @@ async function buscarDadosNFNoXML(numeroNF) {
     return null;
 }
 
+async function buscarTransportadorasNoXML() {
+    const endpoints = Array.isArray(appState.xmlApiBaseUrls) && appState.xmlApiBaseUrls.length > 0
+        ? appState.xmlApiBaseUrls
+        : ['http://127.0.0.1:8787'];
+
+    for (const baseUrl of endpoints) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2200);
+
+        try {
+            const response = await fetch(`${baseUrl}/api/transportadoras`, {
+                method: 'GET',
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+            if (!response.ok) continue;
+
+            const payload = await response.json();
+            const transportadoras = Array.isArray(payload?.transportadoras)
+                ? payload.transportadoras.map((t) => String(t || '').trim()).filter(Boolean)
+                : [];
+
+            if (transportadoras.length > 0) {
+                appState.xmlServiceStatus.indisponivel = false;
+                return Array.from(new Set(transportadoras)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+            }
+        } catch (error) {
+            clearTimeout(timeoutId);
+            continue;
+        }
+    }
+
+    return [];
+}
+
+async function buscarTransportadorasNoSupabase() {
+    try {
+        const rows = await supabaseRequest(
+            `${supabaseConfig.tables.nfs}?select=transportadora&order=transportadora.asc&limit=5000`
+        ).catch(() => []);
+
+        if (!Array.isArray(rows)) return [];
+
+        const transportadoras = rows
+            .map((r) => String(r?.transportadora || '').trim())
+            .filter(Boolean);
+
+        return Array.from(new Set(transportadoras)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    } catch (error) {
+        return [];
+    }
+}
+
 function buscarNotaPorCodigo(codigoLido) {
     const numeroExtraido = extrairNumeroNF(codigoLido);
     if (!numeroExtraido) return null;
@@ -2476,27 +2530,33 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro) {
     for (const nota of notasCandidatas) {
         const numeroNf = normalizarNumeroNf(nota.numero);
 
-        let dadosNf = null;
-        if (numeroNf) {
-            dadosNf = await buscarDadosNFNoSupabase(numeroNf);
-            if (!dadosNf) {
-                dadosNf = await buscarDadosNFNoXML(numeroNf);
+        // Fonte principal para multi-maquinas: dados sincronizados no Supabase (appState.notasFiscais).
+        let artigo = String(nota.artigo ?? '-');
+        let pedido = String(nota.pedido ?? '-');
+        let pesoBruto = toNumber(nota.pesoBruto ?? 0);
+        let metros = toNumber(nota.metros ?? 0);
+        let pcs = toNumber(nota.quantidadeItens ?? 0);
+        let cliente = String(nota.cliente ?? '-');
+        let transportadora = String(nota.transportadora || '').trim();
+        let dataNfRaw = String(nota.dataEmissao ?? '');
+
+        // Fallback opcional para XML local apenas quando o banco nao tiver dados completos.
+        const faltaCampos = !transportadora || !dataNfRaw || !pedido || !artigo;
+        if (faltaCampos && numeroNf) {
+            const dadosNf = await buscarDadosNFNoXML(numeroNf);
+            if (dadosNf && dadosNf.encontrada) {
+                artigo = String(dadosNf.artigo ?? artigo);
+                pedido = String(dadosNf.pedido ?? pedido);
+                pesoBruto = toNumber(dadosNf.pesoBruto ?? pesoBruto);
+                metros = toNumber(dadosNf.metros ?? metros);
+                pcs = toNumber(dadosNf.quantidadeItens ?? pcs);
+                cliente = String(dadosNf.cliente ?? cliente);
+                transportadora = String(dadosNf.transportadora ?? transportadora).trim();
+                dataNfRaw = String(dadosNf.dataEmissao ?? dataNfRaw);
             }
         }
 
-        // Regra de negocio: usar somente NFs com dados extraidos da fonte oficial (XML/Supabase NFs).
-        if (!dadosNf || !dadosNf.encontrada) {
-            continue;
-        }
-
-        const artigo = String(dadosNf?.artigo ?? nota.artigo ?? '-');
-        const pedido = String(dadosNf?.pedido ?? nota.pedido ?? '-');
-        const pesoBruto = toNumber(dadosNf?.pesoBruto ?? nota.pesoBruto ?? 0);
-        const metros = toNumber(dadosNf?.metros ?? nota.metros ?? 0);
-        const pcs = toNumber(dadosNf?.quantidadeItens ?? nota.quantidadeItens ?? 0);
-        const cliente = String(dadosNf?.cliente ?? nota.cliente ?? '-');
-        const transportadora = String(dadosNf?.transportadora || '').trim();
-        const dataNfRaw = String(dadosNf?.dataEmissao ?? nota.dataEmissao ?? '');
+        if (!transportadora) continue;
 
         if (!transportadora) {
             continue;
@@ -2543,9 +2603,20 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
 
     appState.cache.carregandoTransportadorasFaturista = true;
     try {
-        const linhas = await montarLinhasExportacaoFaturista('');
-        const transportadoras = Array.from(new Set(linhas.map((l) => String(l.transp || '').trim()).filter(Boolean)))
-            .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+        // Fonte principal compartilhada por todas as maquinas/dispositivos.
+        let transportadoras = await buscarTransportadorasNoSupabase();
+
+        // Fallback 1: endpoint XML local, quando a sincronizacao de banco ainda nao ocorreu.
+        if (!Array.isArray(transportadoras) || transportadoras.length === 0) {
+            transportadoras = await buscarTransportadorasNoXML();
+        }
+
+        // Fallback 2: deriva pelas NFs conhecidas em memoria.
+        if (!Array.isArray(transportadoras) || transportadoras.length === 0) {
+            const linhas = await montarLinhasExportacaoFaturista('');
+            transportadoras = Array.from(new Set(linhas.map((l) => String(l.transp || '').trim()).filter(Boolean)))
+                .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+        }
 
         appState.cache.transportadorasFaturistaXml = transportadoras;
         appState.cache.transportadorasFaturistaAtualizadoEm = Date.now();

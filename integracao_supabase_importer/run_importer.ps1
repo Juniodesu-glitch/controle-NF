@@ -25,13 +25,17 @@ if (-not (Test-Path '.env')) {
 
 Write-ManagerLog 'Iniciando monitor 24x7 do importer...'
 
-$pythonExe = 'C:\tools\Anaconda3\python.exe'
+$pythonExe = $env:PYTHON_EXE
+if ([string]::IsNullOrWhiteSpace($pythonExe)) {
+    $pythonExe = 'C:\tools\Anaconda3\python.exe'
+}
+
 if (-not (Test-Path $pythonExe)) {
     $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCmd) {
         $pythonExe = $pythonCmd.Source
     } else {
-        Write-ManagerLog 'ERRO: Python não encontrado. Verifique C:\tools\Anaconda3\python.exe ou adicione python ao PATH.'
+        Write-ManagerLog 'ERRO: Python não encontrado. Defina PYTHON_EXE ou adicione python ao PATH.'
         exit 1
     }
 }

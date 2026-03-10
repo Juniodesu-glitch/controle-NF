@@ -99,6 +99,8 @@ def process_one_file(client: SupabaseClient, file_path: str, logger: logging.Log
 
 def main() -> None:
     settings = get_settings()
+    run_once = os.getenv("RUN_ONCE", "0").strip() == "1"
+    force_reimport_all = os.getenv("FORCE_REIMPORT_ALL", "0").strip() == "1"
 
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),
@@ -117,12 +119,16 @@ def main() -> None:
     logger.info("Importer started")
     logger.info("Source dir: %s", settings.nf_source_dir)
     logger.info("Poll seconds: %s", settings.poll_seconds)
+    if run_once:
+        logger.info("RUN_ONCE enabled: importer will execute a single scan cycle")
+    if force_reimport_all:
+        logger.info("FORCE_REIMPORT_ALL enabled: all XML/PDF files will be reprocessed")
 
     while True:
         try:
             changed = 0
             for file_path in iter_nf_files(settings.nf_source_dir):
-                if not should_import(file_path, state):
+                if not force_reimport_all and not should_import(file_path, state):
                     continue
 
                 try:
@@ -145,8 +151,15 @@ def main() -> None:
             if changed > 0:
                 save_state(state_file, state)
 
+            if run_once:
+                logger.info("RUN_ONCE cycle finished. Imported/updated files: %s", changed)
+                break
+
         except Exception:
             logger.exception("Erro no loop principal")
+
+        if run_once:
+            break
 
         time.sleep(settings.poll_seconds)
 

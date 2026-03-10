@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "checkJs": false,
+    "target": "ES2021",
+    "module": "ESNext"
+  },
+  "include": [
+    "app.js",
+    "config.js",
+    "nf-xml-server.js"
+  ],
+  "exclude": [
+    "**/*.ts",
+    "**/*.tsx",
+    "integracao_supabase_importer/**"
+  ]
+}
