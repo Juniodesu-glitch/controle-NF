@@ -57,6 +57,7 @@ const supabaseConfig = {
         solicitacoes: 'solicitacoes_acesso',
         nfs: 'nfs',
         bipagens: 'bipagens',
+        importLogs: 'import_logs',
     },
 };
 
@@ -1338,18 +1339,7 @@ async function buscarDadosNFNoSupabase(numeroNF) {
         const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
         if (!numeroNormalizado) return null;
 
-        // Sem .catch() aqui: erros de rede/autenticação devem ser capturados
-        // pelo bloco externo para que não sejam confundidos com "NF não encontrada".
-        const rows = await supabaseRequest(
-            `${supabaseConfig.tables.nfs}?select=*&numero_nf=eq.${encodeURIComponent(numeroNormalizado)}&limit=1`
-        );
-
-        if (!Array.isArray(rows) || rows.length === 0) {
-            return null;
-        }
-
-        const row = rows[0];
-        return {
+        const mapRowToDadosNf = (row) => ({
             encontrada: true,
             numeroNF: row.numero_nf,
             cliente: row.cliente,
@@ -1362,13 +1352,133 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             valorTotal: row.valor_total,
             dataEmissao: row.data_emissao,
             origemXml: row.origem_xml || '',
-        };
+        });
+
+        const variantes = Array.from(new Set([
+            numeroNormalizado,
+            numeroNormalizado.replace(/^0+/, '') || '0',
+            numeroNormalizado.padStart(9, '0'),
+        ]));
+
+        for (const variante of variantes) {
+            const rows = await supabaseRequest(
+                `${supabaseConfig.tables.nfs}?select=*&numero_nf=eq.${encodeURIComponent(variante)}&limit=1`
+            );
+            if (Array.isArray(rows) && rows.length > 0) {
+                return mapRowToDadosNf(rows[0]);
+            }
+        }
+
+        // Fallback: algumas bases antigas podem ter salvo outro formato em numero_nf.
+        const rowsPorLike = await supabaseRequest(
+            `${supabaseConfig.tables.nfs}?select=*&numero_nf=like.*${encodeURIComponent(numeroNormalizado)}&order=id.desc&limit=5`
+        );
+
+        if (Array.isArray(rowsPorLike) && rowsPorLike.length > 0) {
+            const rowValida = rowsPorLike.find((row) => {
+                const numeroLinha = extrairNumeroNF(String(row?.numero_nf || ''));
+                return numeroLinha === numeroNormalizado;
+            });
+            if (rowValida) {
+                return mapRowToDadosNf(rowValida);
+            }
+        }
+
+        return null;
     } catch (error) {
         console.warn('[Supabase] Falha ao buscar NF por numero:', error?.message || error);
         // Retorna objeto com flag de erro para distinguir "NF não encontrada"
         // de "falha na consulta ao Supabase" (token expirado, rede, etc.).
         return { encontrada: false, erroConexao: true };
     }
+}
+
+async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
+    const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
+    const resultado = {
+        numero: numeroNormalizado,
+        fontes: [],
+        encontrada: false,
+        dadosNF: null,
+        erroConexaoSupabase: false,
+        origem: '',
+    };
+
+    const cache = buscarNotaPorCodigo(numeroNormalizado);
+    if (cache && cache.nota) {
+        resultado.fontes.push(`Cache local: encontrada (ID ${cache.nota.id})`);
+        resultado.encontrada = true;
+        resultado.origem = 'cache';
+        resultado.dadosNF = {
+            encontrada: true,
+            numeroNF: cache.nota.numero,
+            cliente: cache.nota.cliente,
+            transportadora: cache.nota.transportadora,
+            artigo: cache.nota.artigo,
+            pedido: cache.nota.pedido,
+            quantidadeItens: cache.nota.quantidadeItens,
+            metros: cache.nota.metros,
+            pesoBruto: cache.nota.pesoBruto,
+            valorTotal: cache.nota.valor,
+            dataEmissao: cache.nota.dataEmissao,
+            origemXml: cache.nota.origemXml || '',
+        };
+        return resultado;
+    }
+    resultado.fontes.push('Cache local: nao encontrada');
+
+    const dadosXml = await buscarDadosNFNoXML(numeroNormalizado);
+    if (dadosXml && dadosXml.encontrada) {
+        resultado.fontes.push('XML local: encontrada');
+        resultado.encontrada = true;
+        resultado.origem = 'xml';
+        resultado.dadosNF = dadosXml;
+        return resultado;
+    }
+    resultado.fontes.push(
+        appState.xmlServiceStatus.indisponivel
+            ? 'XML local: servico indisponivel'
+            : 'XML local: nao encontrada'
+    );
+
+    const dadosSupa = await buscarDadosNFNoSupabase(numeroNormalizado);
+    if (dadosSupa && dadosSupa.encontrada) {
+        resultado.fontes.push('Supabase nfs: encontrada');
+        resultado.encontrada = true;
+        resultado.origem = 'supabase';
+        resultado.dadosNF = dadosSupa;
+        return resultado;
+    }
+
+    if (dadosSupa && dadosSupa.erroConexao) {
+        resultado.erroConexaoSupabase = true;
+        resultado.fontes.push('Supabase nfs: erro de conexao/autenticacao');
+    } else {
+        resultado.fontes.push('Supabase nfs: nao encontrada');
+    }
+
+    try {
+        const logsRows = await supabaseRequest(
+            `${supabaseConfig.tables.importLogs || 'import_logs'}?select=arquivo,numero_nf,status,created_at&numero_nf=eq.${encodeURIComponent(numeroNormalizado)}&order=created_at.desc&limit=1`
+        );
+        if (Array.isArray(logsRows) && logsRows.length > 0) {
+            const log = logsRows[0];
+            resultado.fontes.push(`Import logs: encontrado (${log.status || 'status-desconhecido'})`);
+        } else {
+            resultado.fontes.push('Import logs: sem registro para este numero');
+        }
+    } catch (error) {
+        resultado.fontes.push('Import logs: falha ao consultar');
+    }
+
+    if (codigoBarrasOriginal) {
+        const chaveLida = String(codigoBarrasOriginal || '').replace(/\D/g, '');
+        if (chaveLida.length === 44) {
+            resultado.fontes.push(`Chave lida: ${chaveLida}`);
+        }
+    }
+
+    return resultado;
 }
 
 async function buscarDadosNFNoXML(numeroNF) {
@@ -3391,30 +3501,22 @@ async function handleBiparFaturamento() {
         return;
     }
 
-    // ─── 1. Tenta serviço XML local (só funciona na mesma máquina da pasta) ──
-    let dadosNF = await buscarDadosNFNoXML(numeroExtraido);
-    const fonteXml = dadosNF && dadosNF.encontrada;
-
-    // ─── 2. Fallback: Supabase — sempre tentado se XML não trouxe resultado ──
-    //        Isso garante que o app funcione pelo Vercel quando o Python
-    //        importer já subiu os dados da pasta para o banco.
-    let erroConexaoSupabase = false;
-    if (!fonteXml) {
-        const dadosBanco = await buscarDadosNFNoSupabase(numeroExtraido);
-        if (dadosBanco && dadosBanco.encontrada) {
-            dadosNF = dadosBanco;
-        } else if (dadosBanco && dadosBanco.erroConexao) {
-            erroConexaoSupabase = true;
-        }
-    }
+    // Busca em cascata com diagnostico fonte por fonte.
+    const diagnostico = await diagnosticarBuscaNF(numeroExtraido, codigoBarras);
+    const dadosNF = diagnostico.dadosNF;
+    const fonteXml = diagnostico.origem === 'xml';
+    const erroConexaoSupabase = diagnostico.erroConexaoSupabase;
 
     // ─── 3. Bloqueia somente se não achou em nenhuma das duas fontes ─────────
     if (!dadosNF || !dadosNF.encontrada) {
         const msgConexao = erroConexaoSupabase
             ? '• ⚠️ Falha na consulta ao Supabase (sessão expirada?). Tente sair e entrar novamente.'
             : '• Se o importador Python está rodando (run_importer.bat)';
+        const resumoFontes = diagnostico.fontes.map((fonte) => `• ${fonte}`).join('\n');
         alert(
             `❌ NF ${numeroExtraido} não encontrada em nenhuma fonte.\n\n` +
+            'Resultado da análise (fonte por fonte):\n' +
+            `${resumoFontes}\n\n` +
             'Verifique:\n' +
             '• Se o XML desta NF está na pasta nf-app\n' +
             msgConexao + '\n' +
