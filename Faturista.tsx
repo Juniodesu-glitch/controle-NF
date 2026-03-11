@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { LogOut, Barcode, Clock, CheckCircle, AlertCircle } from "lucide-react";
+import { LogOut, Barcode, Clock, CheckCircle, AlertCircle, FileDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 
@@ -42,6 +42,11 @@ export default function Faturista() {
       setUltimaBipagem(resultado);
       setCodigoBarras("");
       toast.success("Nota fiscal faturada com sucesso!");
+      if (resultado?.xmlSalvo) {
+        toast.success(`XML SEFAZ salvo: ${resultado.xmlArquivo || "OK"}`);
+      } else {
+        toast.warning(resultado?.xmlMotivo || "Não foi possível baixar XML da SEFAZ");
+      }
       listarBipagens.refetch();
       
       setTimeout(() => {
@@ -165,6 +170,16 @@ export default function Faturista() {
                   <p><strong>Cliente:</strong> {ultimaBipagem.notaFiscal.cliente}</p>
                   <p><strong>Valor:</strong> R$ {ultimaBipagem.notaFiscal.valor}</p>
                   <p><strong>Horário:</strong> {new Date().toLocaleTimeString("pt-BR")}</p>
+                </div>
+                <div className={`mt-3 flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${
+                  ultimaBipagem.xmlSalvo
+                    ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                    : "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20"
+                }`}>
+                  <FileDown size={16} />
+                  {ultimaBipagem.xmlSalvo
+                    ? `XML SEFAZ salvo: ${ultimaBipagem.xmlArquivo || "OK"}`
+                    : `XML SEFAZ: ${ultimaBipagem.xmlMotivo || "não disponível"}`}
                 </div>
               </div>
             </div>
