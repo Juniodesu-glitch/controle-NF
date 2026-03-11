@@ -72,12 +72,26 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  const upstreamUrl = String(process.env.SEFAZ_UPSTREAM_URL || '').trim();
-  if (!upstreamUrl) {
+  // Aceita nomes alternativos para facilitar migração de ambientes já existentes.
+  const upstreamUrl = String(
+    process.env.SEFAZ_UPSTREAM_URL ||
+    process.env.SEFAZ_XML_UPSTREAM_URL ||
+    process.env.SEFAZ_PROXY_UPSTREAM_URL ||
+    process.env.SEFAZ_XML_PROVIDER_URL ||
+    process.env.SEFAZ_XML_API_URL ||
+    ''
+  ).trim();
+
+  const selfPath = '/api/sefaz/xml';
+  const pointsToSelf = upstreamUrl.includes(selfPath);
+
+  if (!upstreamUrl || pointsToSelf) {
     return res.status(503).json({
       ok: false,
       code: 'SEFAZ_UPSTREAM_URL_MISSING',
-      error: 'SEFAZ_UPSTREAM_URL nao configurada no ambiente da Vercel',
+      error: pointsToSelf
+        ? 'URL SEFAZ configurada aponta para o proprio endpoint /api/sefaz/xml (loop). Configure a URL do provedor SEFAZ real.'
+        : 'SEFAZ_UPSTREAM_URL nao configurada no ambiente da Vercel',
     });
   }
 

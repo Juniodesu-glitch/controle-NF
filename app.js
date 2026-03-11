@@ -1559,7 +1559,7 @@ async function consultarXmlNaSefaz(codigoBarrasOriginal, numeroFallback) {
             if (codigoErro === 'SEFAZ_UPSTREAM_URL_MISSING' || mensagemErro.includes('SEFAZ_UPSTREAM_URL')) {
                 return {
                     erro:
-                        'endpoint SEFAZ não configurado na Vercel (configure SEFAZ_UPSTREAM_URL em Project Settings > Environment Variables)'
+                        'endpoint SEFAZ não configurado na Vercel (configure SEFAZ_UPSTREAM_URL ou SEFAZ_XML_UPSTREAM_URL em Project Settings > Environment Variables)'
                 };
             }
 
