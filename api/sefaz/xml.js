@@ -74,8 +74,9 @@ module.exports = async function handler(req, res) {
 
   const upstreamUrl = String(process.env.SEFAZ_UPSTREAM_URL || '').trim();
   if (!upstreamUrl) {
-    return res.status(500).json({
+    return res.status(503).json({
       ok: false,
+      code: 'SEFAZ_UPSTREAM_URL_MISSING',
       error: 'SEFAZ_UPSTREAM_URL nao configurada no ambiente da Vercel',
     });
   }

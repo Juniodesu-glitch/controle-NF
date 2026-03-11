@@ -1544,8 +1544,26 @@ async function consultarXmlNaSefaz(codigoBarrasOriginal, numeroFallback) {
         }
 
         if (!response.ok) {
-            const erro = await response.text();
-            return { erro: `SEFAZ ${response.status}: ${erro || 'sem detalhes'}` };
+            const erroBruto = await response.text();
+            let payloadErro = null;
+
+            try {
+                payloadErro = erroBruto ? JSON.parse(erroBruto) : null;
+            } catch {
+                payloadErro = null;
+            }
+
+            const codigoErro = String(payloadErro?.code || '').trim();
+            const mensagemErro = String(payloadErro?.error || erroBruto || 'sem detalhes').trim();
+
+            if (codigoErro === 'SEFAZ_UPSTREAM_URL_MISSING' || mensagemErro.includes('SEFAZ_UPSTREAM_URL')) {
+                return {
+                    erro:
+                        'endpoint SEFAZ não configurado na Vercel (configure SEFAZ_UPSTREAM_URL em Project Settings > Environment Variables)'
+                };
+            }
+
+            return { erro: `SEFAZ ${response.status}: ${mensagemErro}` };
         }
 
         const contentType = String(response.headers.get('content-type') || '').toLowerCase();
