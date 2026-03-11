@@ -2,14 +2,15 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { LogOut, Users, FileText, Download, CheckCircle, XCircle, Clock } from "lucide-react";
+import { LogOut, Users, FileText, Download, CheckCircle, XCircle, Clock, Settings } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import ConfiguracoesNF from "@/ConfiguracoesNF";
 
 export default function Admin() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "relatorios">("solicitacoes");
+  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "relatorios" | "configuracoes">("solicitacoes");
 
   const solicitacoes = trpc.solicitacoes.listar.useQuery();
   const notasFiscais = trpc.notasFiscais.listar.useQuery();
@@ -113,6 +114,19 @@ export default function Admin() {
             <div className="flex items-center gap-2">
               <Download size={18} />
               Relatórios
+            </div>
+          </button>
+          <button
+            onClick={() => setActiveTab("configuracoes")}
+            className={`px-4 py-3 font-medium border-b-2 transition-colors ${
+              activeTab === "configuracoes"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Settings size={18} />
+              Configurações
             </div>
           </button>
         </div>
@@ -275,6 +289,14 @@ export default function Admin() {
                 </Button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Configurações */}
+        {activeTab === "configuracoes" && (
+          <div>
+            <h2 className="text-2xl font-bold text-foreground mb-6">Configurações do Sistema</h2>
+            <ConfiguracoesNF />
           </div>
         )}
       </main>

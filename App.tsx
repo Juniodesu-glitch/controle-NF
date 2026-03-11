@@ -35,8 +35,20 @@ function ProtectedRoute({ component: Component, requiredRole }: { component: any
   return <Component />;
 }
 
+// Componentes de rota definidos FORA do Router para evitar re-criação a cada render,
+// o que causava desmontagem do componente e reset do estado (ex: aba ativa do Admin).
+const DashboardRoute = () => <ProtectedRoute component={Dashboard} />;
+const FaturistaRoute = () => <ProtectedRoute component={Faturista} requiredRole="user" />;
+const ConferenteRoute = () => <ProtectedRoute component={Conferente} requiredRole="user" />;
+const AdminRoute = () => <ProtectedRoute component={Admin} requiredRole="admin" />;
+
+function HomeRoute() {
+  const { user } = useAuth();
+  return user ? <Dashboard /> : <Login />;
+}
+
 function Router() {
-  const { user, loading } = useAuth();
+  const { loading } = useAuth();
 
   if (loading) {
     return (
@@ -50,14 +62,14 @@ function Router() {
     <Switch>
       <Route path="/login" component={Login} />
       <Route path="/solicitar-acesso" component={SolicitarAcesso} />
-      
+
       {/* Rotas protegidas */}
-      <Route path="/dashboard" component={() => <ProtectedRoute component={Dashboard} />} />
-      <Route path="/faturista" component={() => <ProtectedRoute component={Faturista} requiredRole="user" />} />
-      <Route path="/conferente" component={() => <ProtectedRoute component={Conferente} requiredRole="user" />} />
-      <Route path="/admin" component={() => <ProtectedRoute component={Admin} requiredRole="admin" />} />
-      
-      <Route path="/" component={() => (user ? <Dashboard /> : <Login />)} />
+      <Route path="/dashboard" component={DashboardRoute} />
+      <Route path="/faturista" component={FaturistaRoute} />
+      <Route path="/conferente" component={ConferenteRoute} />
+      <Route path="/admin" component={AdminRoute} />
+
+      <Route path="/" component={HomeRoute} />
       <Route path="/404" component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

@@ -194,6 +194,94 @@ export const appRouter = router({
         return { success: true, url: "#" };
       }),
   }),
+
+  // Configurações de Sistema
+  settings: router({
+    getNfSourcePath: adminProcedure.query(async () => {
+      const { loadSettings, suggestOnedrivePaths, getExpandedNfSourcePath } = await import("./settings");
+      const settings = loadSettings();
+      const suggestions = suggestOnedrivePaths();
+      
+      let currentPath = settings.nfSourcePath;
+      let expandedPath = "";
+      let isAccessible = false;
+
+      try {
+        expandedPath = getExpandedNfSourcePath();
+        isAccessible = true;
+      } catch {
+        // Caminho não configurado ou inválido
+      }
+
+      return {
+        currentPath,
+        expandedPath,
+        isAccessible,
+        sourceType: settings.sourceType,
+        suggestions,
+        lastUpdated: settings.lastUpdated,
+      };
+    }),
+
+    setNfSourcePath: adminProcedure
+      .input(
+        z.object({
+          nfSourcePath: z.string().min(1, "Caminho obrigatório"),
+          sourceType: z.enum(["local", "network", "onedrive-pattern"]),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const { loadSettings, saveSettings, validatePath, expandPath } = await import("./settings");
+        
+        // Validar o caminho
+        const validation = validatePath(input.nfSourcePath);
+        if (!validation.valid) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: validation.error || "Caminho inválido",
+          });
+        }
+
+        // Salvar configurações
+        const settings = loadSettings();
+        settings.nfSourcePath = input.nfSourcePath;
+        settings.sourceType = input.sourceType;
+        settings.lastUpdated = new Date().toISOString();
+        settings.updatedBy = ctx.user.email || ctx.user.id;
+        saveSettings(settings);
+
+        return {
+          success: true,
+          message: `Caminho atualizado com sucesso. ${validation.fileCount || 0} XMLs encontrados.`,
+          expandedPath: expandPath(input.nfSourcePath),
+          fileCount: validation.fileCount,
+        };
+      }),
+
+    validateNfPath: adminProcedure
+      .input(z.object({ nfSourcePath: z.string() }))
+      .mutation(async ({ input }) => {
+        const { validatePath, expandPath } = await import("./settings");
+        const validation = validatePath(input.nfSourcePath);
+        return {
+          valid: validation.valid,
+          error: validation.error,
+          fileCount: validation.fileCount,
+          expandedPath: validation.valid ? expandPath(input.nfSourcePath) : "",
+        };
+      }),
+
+    getSettingsInfo: adminProcedure.query(async () => {
+      const { loadSettings } = await import("./settings");
+      const settings = loadSettings();
+      return {
+        nfSourcePath: settings.nfSourcePath,
+        sourceType: settings.sourceType,
+        lastUpdated: settings.lastUpdated,
+        updatedBy: settings.updatedBy,
+      };
+    }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;
