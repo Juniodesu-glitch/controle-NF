@@ -55,6 +55,16 @@ async function readBody(req) {
   }
 }
 
+function firstEnv(candidates) {
+  for (const key of candidates) {
+    const value = String(process.env[key] || '').trim();
+    if (value) {
+      return { key, value };
+    }
+  }
+  return { key: '', value: '' };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -72,26 +82,38 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // Aceita nomes alternativos para facilitar migração de ambientes já existentes.
-  const upstreamUrl = String(
-    process.env.SEFAZ_UPSTREAM_URL ||
-    process.env.SEFAZ_XML_UPSTREAM_URL ||
-    process.env.SEFAZ_PROXY_UPSTREAM_URL ||
-    process.env.SEFAZ_XML_PROVIDER_URL ||
-    process.env.SEFAZ_XML_API_URL ||
-    ''
-  ).trim();
+  const upstreamUrlCandidates = [
+    'SEFAZ_UPSTREAM_URL',
+    'SEFAZ_XML_UPSTREAM_URL',
+    'SEFAZ_PROXY_UPSTREAM_URL',
+    'SEFAZ_XML_PROVIDER_URL',
+    'SEFAZ_XML_API_URL',
+    // aliases comuns em times que usam prefixo frontend
+    'NEXT_PUBLIC_SEFAZ_UPSTREAM_URL',
+    'NEXT_PUBLIC_SEFAZ_XML_UPSTREAM_URL',
+    // alias curto usado em alguns ambientes
+    'SEFAZ_UPSTREAM',
+  ];
+
+  const upstreamUrlEnv = firstEnv(upstreamUrlCandidates);
+  const upstreamUrl = upstreamUrlEnv.value;
 
   const selfPath = '/api/sefaz/xml';
   const pointsToSelf = upstreamUrl.includes(selfPath);
 
   if (!upstreamUrl || pointsToSelf) {
+    const available = {};
+    for (const key of upstreamUrlCandidates) {
+      available[key] = Boolean(String(process.env[key] || '').trim());
+    }
+
     return res.status(503).json({
       ok: false,
       code: 'SEFAZ_UPSTREAM_URL_MISSING',
       error: pointsToSelf
         ? 'URL SEFAZ configurada aponta para o proprio endpoint /api/sefaz/xml (loop). Configure a URL do provedor SEFAZ real.'
         : 'SEFAZ_UPSTREAM_URL nao configurada no ambiente da Vercel',
+      checked: available,
     });
   }
 
@@ -107,8 +129,21 @@ module.exports = async function handler(req, res) {
 
     const chaveAcesso = extractAccessKey(codigo);
     const numeroNF = extractNfNumber(codigo);
-    const upstreamMethod = String(process.env.SEFAZ_UPSTREAM_METHOD || 'POST').toUpperCase();
-    const upstreamToken = String(process.env.SEFAZ_UPSTREAM_TOKEN || '').trim();
+    const upstreamMethodEnv = firstEnv([
+      'SEFAZ_UPSTREAM_METHOD',
+      'SEFAZ_XML_UPSTREAM_METHOD',
+      'SEFAZ_PROXY_UPSTREAM_METHOD',
+      'NEXT_PUBLIC_SEFAZ_UPSTREAM_METHOD',
+    ]);
+    const upstreamMethod = String(upstreamMethodEnv.value || 'POST').toUpperCase();
+
+    const upstreamTokenEnv = firstEnv([
+      'SEFAZ_UPSTREAM_TOKEN',
+      'SEFAZ_XML_UPSTREAM_TOKEN',
+      'SEFAZ_PROXY_UPSTREAM_TOKEN',
+      'SEFAZ_XML_PROVIDER_TOKEN',
+    ]);
+    const upstreamToken = String(upstreamTokenEnv.value || '').trim();
 
     const headers = {
       Accept: 'application/json, text/xml, application/xml, text/plain',
@@ -156,7 +191,18 @@ module.exports = async function handler(req, res) {
       return res.status(404).json({ ok: false, error: 'XML nao encontrado para o codigo informado' });
     }
 
-    return res.status(200).json({ ok: true, source: 'vercel-api', numeroNF, chaveAcesso, xml });
+    return res.status(200).json({
+      ok: true,
+      source: 'vercel-api',
+      sourceEnv: {
+        upstreamUrl: upstreamUrlEnv.key,
+        upstreamMethod: upstreamMethodEnv.key || 'DEFAULT_POST',
+        upstreamToken: upstreamTokenEnv.key || '',
+      },
+      numeroNF,
+      chaveAcesso,
+      xml,
+    });
   } catch (error) {
     return res.status(500).json({ ok: false, error: error?.message || String(error) });
   }
