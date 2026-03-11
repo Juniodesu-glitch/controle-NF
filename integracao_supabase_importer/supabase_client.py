@@ -54,7 +54,7 @@ class SupabaseClient:
             "GET",
             "nfs",
             params={
-                "select": "id,numero_nf,serie,pedido,cliente,transportadora,artigo,quantidade_itens,metros,peso_bruto,valor_total,data_emissao,status,origem_xml",
+                "select": "id,numero_nf,serie,pedido,cliente,transportadora,artigo,quantidade_itens,metros,peso_bruto,valor_total,data_emissao,status,origem_xml,chave_acesso",
                 "numero_nf": f"eq.{numero_nf}",
                 "limit": "1",
             },
@@ -86,7 +86,7 @@ class SupabaseClient:
         existing = self.find_nf_by_numero(numero_nf)
         origem_tipo = str(nf.get("origem_tipo") or "").lower()
 
-        payload = {
+        payload: Dict[str, Any] = {
             "numero_nf": numero_nf,
             "serie": nf.get("serie") or "1",
             "pedido": nf.get("pedido") or "-",
@@ -100,7 +100,13 @@ class SupabaseClient:
             "data_emissao": nf.get("data_emissao") or None,
             "status": nf.get("status") or "pendente",
             "origem_xml": nf.get("origem_xml"),
+            "chave_acesso": nf.get("chave_acesso") or None,
         }
+
+        # Armazena conteudo XML completo para download direto pelo frontend
+        xml_conteudo = nf.get("xml_conteudo")
+        if xml_conteudo:
+            payload["xml_conteudo"] = xml_conteudo
 
         if existing:
             # PDF costuma ter dados parciais; preserva dados já completos vindos de XML/edições.

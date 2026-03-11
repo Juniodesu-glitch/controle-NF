@@ -84,6 +84,18 @@ def mark_imported(file_path: str, state: Dict[str, Dict[str, Any]]) -> None:
 def process_one_file(client: SupabaseClient, file_path: str, logger: logging.Logger) -> None:
     parsed = parse_nf_file(file_path)
 
+    # Armazena conteudo XML completo para download direto pelo frontend
+    if file_path.lower().endswith(".xml"):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                parsed["xml_conteudo"] = f.read()
+        except Exception:
+            try:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    parsed["xml_conteudo"] = f.read()
+            except Exception:
+                logger.warning("Nao foi possivel ler conteudo XML: %s", file_path)
+
     nf_id = client.upsert_nf(parsed)
     client.replace_nf_itens(nf_id, parsed.get("itens", []))
 

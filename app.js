@@ -14,12 +14,6 @@ const appState = {
     ultimaBipagemFaturista: null,
     solicitacoes: [],
     usuarios: [],
-    xmlApiBaseUrls: ['http://127.0.0.1:8788', 'http://localhost:8788', 'http://127.0.0.1:8787', 'http://localhost:8787'],
-    xmlServiceStatus: {
-        indisponivel: false,
-        ultimoAviso: 0,
-        avisoConsoleEmitido: false,
-    },
     scanTimers: {
         faturamento: null,
         expedicao: null,
@@ -47,7 +41,6 @@ const dadosSimulados = {
 };
 
 const runtimeConfig = (typeof window !== 'undefined' && window.__APP_CONFIG__) ? window.__APP_CONFIG__ : {};
-const enableXmlTransportadoraFallback = Boolean(runtimeConfig.enableXmlTransportadoraFallback);
 
 const supabaseConfig = {
     url: runtimeConfig.supabaseUrl || 'https://ttxobirrlaetnnnpalfk.supabase.co',
@@ -76,24 +69,6 @@ appState.sync = {
     timer: null,
     intervalMs: 12000,
     emAndamento: false,
-};
-
-appState.filtros = {
-    transportadoraFaturista: '',
-};
-
-appState.cache = {
-    transportadorasFaturistaXml: [],
-    carregandoTransportadorasFaturista: false,
-    transportadorasFaturistaAtualizadoEm: 0,
-    transportadorasFaturistaTtlMs: 15000,
-};
-
-appState.xmlSync = {
-    emAndamento: false,
-    ultimoSyncEm: 0,
-    proximaTentativaEm: 0,
-    intervaloMinMs: 90000,
 };
 
 async function sincronizarDadosEmSegundoPlano() {
@@ -1393,6 +1368,41 @@ async function buscarDadosNFNoSupabase(numeroNF) {
     }
 }
 
+async function baixarXmlDaNF(numeroNF) {
+    try {
+        const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
+        if (!numeroNormalizado) return;
+
+        const variantes = Array.from(new Set([
+            numeroNormalizado,
+            numeroNormalizado.replace(/^0+/, '') || '0',
+            numeroNormalizado.padStart(9, '0'),
+        ]));
+
+        for (const variante of variantes) {
+            const rows = await supabaseRequest(
+                `${supabaseConfig.tables.nfs}?select=numero_nf,xml_conteudo&numero_nf=eq.${encodeURIComponent(variante)}&limit=1`
+            );
+            if (Array.isArray(rows) && rows.length > 0 && rows[0].xml_conteudo) {
+                const xmlConteudo = rows[0].xml_conteudo;
+                const blob = new Blob([xmlConteudo], { type: 'application/xml;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `NF_${rows[0].numero_nf}.xml`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+                return true;
+            }
+        }
+
+        console.info('[Download] XML ainda não disponível para NF', numeroNF);
+        return false;
+    } catch (error) {
+        console.warn('[Download] Falha ao baixar XML da NF:', error?.message || error);
+        return false;
+    }
+}
+
 async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
     const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
     const resultado = {
@@ -1427,23 +1437,9 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
     }
     resultado.fontes.push('Cache local: nao encontrada');
 
-    const dadosXml = await buscarDadosNFNoXML(numeroNormalizado);
-    if (dadosXml && dadosXml.encontrada) {
-        resultado.fontes.push('XML local: encontrada');
-        resultado.encontrada = true;
-        resultado.origem = 'xml';
-        resultado.dadosNF = dadosXml;
-        return resultado;
-    }
-    resultado.fontes.push(
-        appState.xmlServiceStatus.indisponivel
-            ? 'XML local: servico indisponivel'
-            : 'XML local: nao encontrada'
-    );
-
     const dadosSupa = await buscarDadosNFNoSupabase(numeroNormalizado);
     if (dadosSupa && dadosSupa.encontrada) {
-        resultado.fontes.push('Supabase nfs: encontrada');
+        resultado.fontes.push('Supabase: encontrada');
         resultado.encontrada = true;
         resultado.origem = 'supabase';
         resultado.dadosNF = dadosSupa;
@@ -1452,9 +1448,9 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
 
     if (dadosSupa && dadosSupa.erroConexao) {
         resultado.erroConexaoSupabase = true;
-        resultado.fontes.push('Supabase nfs: erro de conexao/autenticacao');
+        resultado.fontes.push('Supabase: erro de conexao/autenticacao');
     } else {
-        resultado.fontes.push('Supabase nfs: nao encontrada');
+        resultado.fontes.push('Supabase: nao encontrada');
     }
 
     try {
@@ -1482,197 +1478,30 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
 }
 
 async function buscarDadosNFNoXML(numeroNF) {
-    const endpoints = Array.isArray(appState.xmlApiBaseUrls) && appState.xmlApiBaseUrls.length > 0
-        ? appState.xmlApiBaseUrls
-        : ['http://127.0.0.1:8787'];
-
-    for (const baseUrl of endpoints) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1800);
-
-        try {
-            const response = await fetch(`${baseUrl}/api/nf/${encodeURIComponent(numeroNF)}`, {
-                method: 'GET',
-                signal: controller.signal,
-            });
-
-            clearTimeout(timeoutId);
-
-            if (response.status === 404) {
-                appState.xmlServiceStatus.indisponivel = false;
-                return null;
-            }
-
-            if (!response.ok) {
-                continue;
-            }
-
-            const payload = await response.json();
-            appState.xmlServiceStatus.indisponivel = false;
-            return payload;
-        } catch (error) {
-            clearTimeout(timeoutId);
-            continue;
-        }
-    }
-
-    appState.xmlServiceStatus.indisponivel = true;
-    const agora = Date.now();
-    if (!appState.xmlServiceStatus.avisoConsoleEmitido || (agora - appState.xmlServiceStatus.ultimoAviso > 120000)) {
-        appState.xmlServiceStatus.ultimoAviso = agora;
-        appState.xmlServiceStatus.avisoConsoleEmitido = true;
-        console.warn('[XML] Serviço indisponível. Bipagem segue sem enriquecimento automático.');
-    }
-
+    // Removido: busca agora é feita exclusivamente via Supabase.
+    // O importer Python envia os XMLs continuamente para o banco.
     return null;
 }
 
 async function buscarTransportadorasNoXML() {
-    const endpoints = Array.isArray(appState.xmlApiBaseUrls) && appState.xmlApiBaseUrls.length > 0
-        ? appState.xmlApiBaseUrls
-        : ['http://127.0.0.1:8787'];
-
-    for (const baseUrl of endpoints) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2200);
-
-        try {
-            const response = await fetch(`${baseUrl}/api/transportadoras`, {
-                method: 'GET',
-                signal: controller.signal,
-            });
-
-            clearTimeout(timeoutId);
-            if (!response.ok) continue;
-
-            const payload = await response.json();
-            const transportadoras = Array.isArray(payload?.transportadoras)
-                ? payload.transportadoras.map((t) => String(t || '').trim()).filter(Boolean)
-                : [];
-
-            if (transportadoras.length > 0) {
-                appState.xmlServiceStatus.indisponivel = false;
-                return Array.from(new Set(transportadoras)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-            }
-        } catch (error) {
-            clearTimeout(timeoutId);
-            continue;
-        }
-    }
-
+    // Removido: busca agora é feita exclusivamente via Supabase.
     return [];
 }
 
 async function buscarNfsNoXML() {
-    const endpoints = Array.isArray(appState.xmlApiBaseUrls) && appState.xmlApiBaseUrls.length > 0
-        ? appState.xmlApiBaseUrls
-        : ['http://127.0.0.1:8787'];
-
-    let respondeuComSucesso = false;
-
-    for (const baseUrl of endpoints) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-        try {
-            const response = await fetch(`${baseUrl}/api/nfs`, {
-                method: 'GET',
-                signal: controller.signal,
-            });
-
-            clearTimeout(timeoutId);
-            if (!response.ok) continue;
-            respondeuComSucesso = true;
-
-            const payload = await response.json();
-            const nfs = Array.isArray(payload?.nfs) ? payload.nfs : [];
-            appState.xmlServiceStatus.indisponivel = false;
-            if (nfs.length > 0) {
-                await integrarNfsXmlNoAppESupabase(nfs);
-            }
-            return nfs;
-        } catch (error) {
-            clearTimeout(timeoutId);
-            continue;
-        }
-    }
-
-    if (!respondeuComSucesso) {
-        appState.xmlServiceStatus.indisponivel = true;
-        return null;
-    }
-
+    // Removido: dados vêm do importer Python via Supabase.
     return [];
 }
+
 async function sincronizarNfsXmlNoFluxo(force = false) {
-    if (appState.xmlSync.emAndamento) return;
-
-    const agora = Date.now();
-    if (!force && agora < appState.xmlSync.proximaTentativaEm) return;
-
-    const dentroDaJanela = (agora - appState.xmlSync.ultimoSyncEm) < appState.xmlSync.intervaloMinMs;
-    if (!force && dentroDaJanela) return;
-
-    appState.xmlSync.emAndamento = true;
-    try {
-        const resultado = await buscarNfsNoXML();
-        if (resultado === null) {
-            appState.xmlSync.proximaTentativaEm = Date.now() + 120000;
-            return;
-        }
-
-        appState.xmlSync.ultimoSyncEm = Date.now();
-        appState.xmlSync.proximaTentativaEm = 0;
-    } catch (error) {
-        appState.xmlSync.proximaTentativaEm = Date.now() + 120000;
-    } finally {
-        appState.xmlSync.emAndamento = false;
-    }
+    // Removido: não depende mais do XML server local.
+    // Dados são sincronizados pelo importer Python direto no Supabase.
+    return;
 }
 
 async function integrarNfsXmlNoAppESupabase(nfsXml) {
-    if (!Array.isArray(nfsXml) || nfsXml.length === 0) return;
-
-    const normalizarNumero = (valor) => String(valor || '').replace(/\D/g, '');
-    const notasParaSincronizar = [];
-
-    for (const row of nfsXml) {
-        const numero = normalizarNumero(row?.numeroNF || row?.numero_nf || row?.numero);
-        if (!numero) continue;
-
-        let nota = appState.notasFiscais.find((n) => normalizarNumero(n?.numero) === numero);
-        if (!nota) {
-            nota = criarNotaAPartirDaLeitura(numero);
-        }
-
-        aplicarDadosXMLNaNota(nota, {
-            encontrada: true,
-            numeroNF: numero,
-            cliente: row?.cliente,
-            transportadora: row?.transportadora,
-            artigo: row?.artigo,
-            pedido: row?.pedido,
-            quantidadeItens: row?.quantidadeItens ?? row?.quantidade_itens,
-            metros: row?.metros,
-            pesoBruto: row?.pesoBruto ?? row?.peso_bruto,
-            valorTotal: row?.valorTotal ?? row?.valor_total,
-            dataEmissao: row?.dataEmissao ?? row?.data_emissao,
-            origemXml: row?.origemXml || row?.arquivo,
-        });
-        notasParaSincronizar.push(nota);
-    }
-
-    // Sincronizacao em lote para acelerar a subida de todas as NFs da pasta ao banco.
-    if (notasParaSincronizar.length > 0) {
-        try {
-            await sincronizarNfsSupabaseEmLote(notasParaSincronizar, 200);
-        } catch (error) {
-            // Fallback resiliente: se upsert em lote falhar, aplica sincronizacao individual.
-            for (const nota of notasParaSincronizar) {
-                await sincronizarNfSupabase(nota).catch(() => null);
-            }
-        }
-    }
+    // Removido: integração XML agora é feita pelo importer Python.
+    return;
 }
 
 async function buscarTransportadorasNoSupabase() {
@@ -2000,7 +1829,7 @@ async function gerarRelatorioExpedicaoExcel() {
         return digitos.slice(-3);
     };
 
-    // Enriquecimento com XML/Supabase para garantir o maximo de campos no layout final.
+    // Enriquecimento via Supabase para garantir o maximo de campos no layout final.
     for (const bipagem of appState.bipagensExpedicao) {
         const numeroNf = normalizarNumeroNf(bipagem.numeroNF);
         if (!numeroNf) continue;
@@ -2008,10 +1837,7 @@ async function gerarRelatorioExpedicaoExcel() {
         const precisaEnriquecer = !bipagem.artigo || !bipagem.pedido || !bipagem.transportadora || !toNumber(bipagem.pesoBruto) || !toNumber(bipagem.metros);
         if (!precisaEnriquecer) continue;
 
-        let dadosNf = await buscarDadosNFNoSupabase(numeroNf);
-        if (!dadosNf || !dadosNf.encontrada) {
-            dadosNf = await buscarDadosNFNoXML(numeroNf);
-        }
+        const dadosNf = await buscarDadosNFNoSupabase(numeroNf);
 
         if (!dadosNf || !dadosNf.encontrada) continue;
 
@@ -2941,14 +2767,14 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
         let transportadora = String(nota.transportadora || '').trim();
         let dataNfRaw = String(nota.dataEmissao ?? '');
 
-        // Fallback opcional para XML local apenas quando o banco nao tiver dados completos.
+        // Fallback: busca no Supabase quando o banco nao tiver dados completos.
         const faltaTransportadora = valorAusente(transportadora, ['não informada', 'nao informada', '-']);
         const faltaPedido = valorAusente(pedido, ['-']);
         const faltaArtigo = valorAusente(artigo, ['-']);
         const faltaData = !String(dataNfRaw || '').trim();
         const faltaCampos = faltaTransportadora || faltaData || faltaPedido || faltaArtigo;
         if (incluirFallbackXml && faltaCampos && numeroNf) {
-            const dadosNf = await buscarDadosNFNoXML(numeroNf);
+            const dadosNf = await buscarDadosNFNoSupabase(numeroNf);
             if (dadosNf && dadosNf.encontrada) {
                 artigo = String(dadosNf.artigo ?? artigo);
                 pedido = String(dadosNf.pedido ?? pedido);
@@ -3031,15 +2857,10 @@ async function atualizarTransportadorasFaturistaDoXml(force = false) {
 
     appState.cache.carregandoTransportadorasFaturista = true;
     try {
-        // Fonte principal compartilhada por todas as maquinas/dispositivos.
+        // Fonte principal: Supabase.
         let transportadoras = await buscarTransportadorasNoSupabase();
 
-        // Fallback opcional: endpoint XML local (somente quando explicitamente habilitado por config).
-        if (enableXmlTransportadoraFallback && (!Array.isArray(transportadoras) || transportadoras.length === 0)) {
-            transportadoras = await buscarTransportadorasNoXML();
-        }
-
-        // Fallback 2: deriva pelas NFs faturadas conhecidas (com enriquecimento XML quando necessario).
+        // Fallback: deriva pelas NFs faturadas conhecidas.
         if (!Array.isArray(transportadoras) || transportadoras.length === 0) {
             const linhas = await montarLinhasExportacaoFaturista('', false);
             transportadoras = Array.from(new Set(linhas.map((l) => String(l.transp || '').trim()).filter(Boolean)))
@@ -3432,7 +3253,6 @@ function renderizarFaturista() {
                     </div>
                     <p style="color:var(--text-secondary);font-size:12px;margin-top:10px;">
                         ℹ️ Ordem FIFO — NF com data de emissão mais antiga aparece primeiro. NFs expedidas pelo conferente são removidas automaticamente.
-                        ${appState.xmlServiceStatus.indisponivel ? '<br><span style="color:#f87171;">⚠️ Serviço XML local indisponível. Exibindo dados do Supabase.</span>' : ''}
                     </p>
                 </div>
 
@@ -3501,35 +3321,31 @@ async function handleBiparFaturamento() {
         return;
     }
 
-    // Busca em cascata com diagnostico fonte por fonte.
+    // Busca em cascata: cache local → Supabase.
     const diagnostico = await diagnosticarBuscaNF(numeroExtraido, codigoBarras);
     const dadosNF = diagnostico.dadosNF;
-    const fonteXml = diagnostico.origem === 'xml';
     const erroConexaoSupabase = diagnostico.erroConexaoSupabase;
 
-    // ─── 3. Bloqueia somente se não achou em nenhuma das duas fontes ─────────
+    // ─── 3. Bloqueia somente se não achou em nenhuma fonte ─────────
     if (!dadosNF || !dadosNF.encontrada) {
         const msgConexao = erroConexaoSupabase
             ? '• ⚠️ Falha na consulta ao Supabase (sessão expirada?). Tente sair e entrar novamente.'
-            : '• Se o importador Python está rodando (run_importer.bat)';
+            : '• Verifique se o importador Python (run_importer.bat) está rodando em alguma máquina da rede';
         const resumoFontes = diagnostico.fontes.map((fonte) => `• ${fonte}`).join('\n');
         alert(
-            `❌ NF ${numeroExtraido} não encontrada em nenhuma fonte.\n\n` +
-            'Resultado da análise (fonte por fonte):\n' +
+            `❌ NF ${numeroExtraido} não encontrada.\n\n` +
+            'Resultado da análise:\n' +
             `${resumoFontes}\n\n` +
             'Verifique:\n' +
             '• Se o XML desta NF está na pasta nf-app\n' +
-            msgConexao + '\n' +
-            (appState.xmlServiceStatus.indisponivel
-                ? '• O serviço XML local está indisponível — acesse o app no computador com a pasta ou garanta que o importador Python enviou os dados ao Supabase.'
-                : '• O arquivo XML pode não ter sido copiado para a pasta nf-app ainda.')
+            msgConexao
         );
         return;
     }
 
-    // ─── 4. Valida consistência número bipado × número no XML (só com fonte XML) ──
+    // ─── 4. Valida consistência número bipado × número retornado ──
     const numeroNoXml = String(dadosNF.numeroNF || '').replace(/\D/g, '');
-    if (fonteXml && numeroNoXml && numeroNoXml !== numeroExtraido) {
+    if (numeroNoXml && numeroNoXml !== numeroExtraido) {
         alert(
             `⚠️ Inconsistência detectada.\n\n` +
             `Número bipado : ${numeroExtraido}\n` +
@@ -3568,6 +3384,10 @@ async function handleBiparFaturamento() {
 
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
         await sincronizarNfSupabase(nota).catch(() => null);
+
+        // Download automático do XML da NF ao bipar
+        void baixarXmlDaNF(numeroExtraido);
+
         appState.ultimaBipagemFaturista = {
             numero: nota.numero,
             cliente: nota.cliente,
@@ -3716,13 +3536,9 @@ async function handleBiparExpedicao() {
         return;
     }
 
-    // Se a NF não está no cache local, tenta buscar no Supabase e no XML local
-    // (isso acontece quando a NF foi importada pelo Python após o último sync)
+    // Se a NF não está no cache local, tenta buscar no Supabase
     if (!buscarNotaPorCodigo(numeroExtraido)) {
-        let dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
-        if (!dadosNF || !dadosNF.encontrada) {
-            dadosNF = await buscarDadosNFNoXML(numeroExtraido);
-        }
+        const dadosNF = await buscarDadosNFNoSupabase(numeroExtraido);
         if (dadosNF && dadosNF.encontrada) {
             let nota = criarNotaAPartirDaLeitura(numeroExtraido);
             aplicarDadosXMLNaNota(nota, dadosNF);

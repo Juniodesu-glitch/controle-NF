@@ -31,6 +31,8 @@ create table if not exists public.nfs (
   data_emissao date null,
   status text not null default 'pendente',
   origem_xml text null,
+  chave_acesso text null,
+  xml_conteudo text null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint nfs_status_check check (status in ('pendente', 'faturada', 'expedida', 'entregue'))
@@ -50,6 +52,8 @@ alter table public.nfs add column if not exists valor_total numeric(14,2) defaul
 alter table public.nfs add column if not exists data_emissao date;
 alter table public.nfs add column if not exists status text default 'pendente';
 alter table public.nfs add column if not exists origem_xml text;
+alter table public.nfs add column if not exists chave_acesso text;
+alter table public.nfs add column if not exists xml_conteudo text;
 alter table public.nfs add column if not exists created_at timestamptz default now();
 alter table public.nfs add column if not exists updated_at timestamptz default now();
 
