@@ -63,6 +63,13 @@ const supabaseConfig = {
     },
 };
 
+const sefazConfig = {
+    // Em produção HTTPS, prefira endpoint HTTPS no mesmo domínio (ex.: /api/sefaz/xml).
+    url: runtimeConfig.sefazProxyUrl || runtimeConfig.sefazXmlApiUrl || '/api/sefaz/xml',
+    method: String(runtimeConfig.sefazProxyMethod || runtimeConfig.sefazXmlApiMethod || 'POST').toUpperCase(),
+    apiKey: runtimeConfig.sefazProxyApiKey || runtimeConfig.sefazXmlApiKey || '',
+};
+
 appState.supabase = {
     conectado: false,
     nfIdPorNumero: {},
@@ -1412,6 +1419,172 @@ async function baixarXmlDaNF(numeroNF) {
     }
 }
 
+function salvarXmlComoDownload(xmlConteudo, nomeArquivoBase) {
+    if (!xmlConteudo) return false;
+    const blob = new Blob([xmlConteudo], { type: 'application/xml;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = nomeArquivoBase || `NF_${Date.now()}.xml`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    return true;
+}
+
+function getXmlTagText(xmlDoc, tagName) {
+    const direct = xmlDoc.getElementsByTagName(tagName);
+    if (direct && direct.length > 0) {
+        const value = String(direct[0].textContent || '').trim();
+        if (value) return value;
+    }
+
+    const all = xmlDoc.getElementsByTagName('*');
+    for (let i = 0; i < all.length; i += 1) {
+        const node = all[i];
+        if (String(node.localName || '').toLowerCase() === String(tagName).toLowerCase()) {
+            const value = String(node.textContent || '').trim();
+            if (value) return value;
+        }
+    }
+
+    return '';
+}
+
+function getXmlTextByXPath(xmlDoc, xpath) {
+    try {
+        const value = xmlDoc.evaluate(
+            xpath,
+            xmlDoc,
+            null,
+            XPathResult.STRING_TYPE,
+            null
+        ).stringValue;
+        return String(value || '').trim();
+    } catch {
+        return '';
+    }
+}
+
+function mapXmlConteudoParaDadosNF(xmlConteudo, numeroFallback, origemLabel = 'sefaz-proxy') {
+    try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlConteudo, 'application/xml');
+
+        const numeroXML = (getXmlTagText(doc, 'nNF') || String(numeroFallback || '')).replace(/\D/g, '');
+        const cliente = getXmlTextByXPath(doc, "//*[local-name()='dest']/*[local-name()='xNome']") || 'Cliente não informado';
+        const transportadora =
+            getXmlTextByXPath(doc, "//*[local-name()='transp']/*[local-name()='transporta']/*[local-name()='xNome']") ||
+            'Não informada';
+        const pedido = getXmlTagText(doc, 'xPed') || getXmlTagText(doc, 'nPed') || '-';
+        const artigo = getXmlTagText(doc, 'xProd') || '-';
+
+        const qComList = Array.from(doc.getElementsByTagName('qCom'));
+        const quantidadeItens = qComList.reduce((acc, n) => {
+            const val = Number(String(n.textContent || '').replace(',', '.'));
+            return acc + (Number.isFinite(val) ? val : 0);
+        }, 0);
+
+        const pesoBruto = Number(String(getXmlTagText(doc, 'pesoB') || '0').replace(',', '.')) || 0;
+        const valorTotal = Number(String(getXmlTagText(doc, 'vNF') || '0').replace(',', '.')) || 0;
+        const dataEmissaoBruta = getXmlTagText(doc, 'dhEmi') || getXmlTagText(doc, 'dEmi') || '';
+        const dataEmissao = dataEmissaoBruta ? String(dataEmissaoBruta).slice(0, 10) : '';
+
+        return {
+            encontrada: true,
+            numeroNF: numeroXML,
+            cliente,
+            transportadora,
+            artigo,
+            pedido,
+            quantidadeItens,
+            metros: 0,
+            pesoBruto,
+            valorTotal,
+            dataEmissao,
+            origemXml: origemLabel,
+        };
+    } catch (error) {
+        console.warn('[SEFAZ] Falha ao parsear XML:', error?.message || error);
+        return null;
+    }
+}
+
+async function consultarXmlNaSefaz(codigoBarrasOriginal, numeroFallback) {
+    try {
+        const codigo = String(codigoBarrasOriginal || '').trim();
+        if (!codigo) return null;
+
+        const chaveAcesso = String(codigo).replace(/\D/g, '');
+        const numeroNF = String(numeroFallback || extrairNumeroNF(codigo)).replace(/\D/g, '');
+
+        const headers = {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/xml, application/xml, text/plain',
+        };
+        if (sefazConfig.apiKey) {
+            headers['X-Api-Key'] = sefazConfig.apiKey;
+        }
+
+        let response;
+        if (sefazConfig.method === 'GET') {
+            const query = new URLSearchParams();
+            query.set('codigo', codigo);
+            if (chaveAcesso.length === 44) query.set('chave', chaveAcesso);
+            if (numeroNF) query.set('numeroNF', numeroNF);
+            response = await fetch(`${sefazConfig.url}?${query.toString()}`, { method: 'GET', headers });
+        } else {
+            response = await fetch(sefazConfig.url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    codigo,
+                    chaveAcesso: chaveAcesso.length === 44 ? chaveAcesso : '',
+                    numeroNF,
+                }),
+            });
+        }
+
+        if (!response.ok) {
+            const erro = await response.text();
+            return { erro: `SEFAZ ${response.status}: ${erro || 'sem detalhes'}` };
+        }
+
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        let xmlConteudo = '';
+
+        if (contentType.includes('application/json')) {
+            const payload = await response.json();
+            xmlConteudo = String(
+                payload?.xml ||
+                payload?.xmlContent ||
+                payload?.xml_conteudo ||
+                payload?.conteudoXml ||
+                payload?.content ||
+                ''
+            );
+        } else {
+            xmlConteudo = await response.text();
+        }
+
+        if (!xmlConteudo || !xmlConteudo.trim()) {
+            return { erro: 'SEFAZ não retornou XML' };
+        }
+
+        const dadosNF = mapXmlConteudoParaDadosNF(xmlConteudo, numeroNF, 'sefaz');
+        if (!dadosNF || !dadosNF.encontrada) {
+            return { erro: 'SEFAZ retornou XML, mas não foi possível extrair os dados da NF' };
+        }
+
+        return {
+            encontrada: true,
+            dadosNF,
+            xmlConteudo,
+            nomeArquivo: `NF_${dadosNF.numeroNF || numeroNF || Date.now()}.xml`,
+        };
+    } catch (error) {
+        return { erro: error?.message || String(error) };
+    }
+}
+
 async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
     const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
     const resultado = {
@@ -1419,6 +1592,8 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
         fontes: [],
         encontrada: false,
         dadosNF: null,
+        xmlConteudo: '',
+        nomeArquivo: '',
         erroConexaoSupabase: false,
         origem: '',
     };
@@ -1474,6 +1649,23 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
         }
     } catch (error) {
         resultado.fontes.push('Import logs: falha ao consultar');
+    }
+
+    // Fallback final: consulta XML direto na SEFAZ (via proxy configurado).
+    const sefaz = await consultarXmlNaSefaz(codigoBarrasOriginal || numeroNormalizado, numeroNormalizado);
+    if (sefaz && sefaz.encontrada && sefaz.dadosNF) {
+        resultado.fontes.push('SEFAZ: encontrada');
+        resultado.encontrada = true;
+        resultado.origem = 'sefaz';
+        resultado.dadosNF = sefaz.dadosNF;
+        resultado.xmlConteudo = sefaz.xmlConteudo || '';
+        resultado.nomeArquivo = sefaz.nomeArquivo || '';
+        return resultado;
+    }
+    if (sefaz && sefaz.erro) {
+        resultado.fontes.push(`SEFAZ: ${sefaz.erro}`);
+    } else {
+        resultado.fontes.push('SEFAZ: nao encontrada');
     }
 
     if (codigoBarrasOriginal) {
@@ -3394,8 +3586,16 @@ async function handleBiparFaturamento() {
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
         await sincronizarNfSupabase(nota).catch(() => null);
 
-        // Download automático do XML da NF ao bipar
-        void baixarXmlDaNF(numeroExtraido);
+        // Download automático do XML da NF ao bipar.
+        // Prioriza XML retornado pela SEFAZ; fallback para conteúdo salvo no Supabase.
+        if (diagnostico.xmlConteudo) {
+            salvarXmlComoDownload(
+                diagnostico.xmlConteudo,
+                diagnostico.nomeArquivo || `NF_${numeroExtraido}.xml`
+            );
+        } else {
+            void baixarXmlDaNF(numeroExtraido);
+        }
 
         appState.ultimaBipagemFaturista = {
             numero: nota.numero,
