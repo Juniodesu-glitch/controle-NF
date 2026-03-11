@@ -3498,7 +3498,7 @@ async function handleBiparFaturamento() {
             'Resultado da análise:\n' +
             `${resumoFontes}\n\n` +
             'Verifique:\n' +
-            '• Se a chave da NF é válida e pertence ao seu CNPJ\n' +
+            '• Se a chave da NF está correta (44 dígitos)\n' +
             '• Se o endpoint SEFAZ está configurado e ativo no ambiente publicado'
         );
         return;
