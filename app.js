@@ -1594,64 +1594,10 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
         dadosNF: null,
         xmlConteudo: '',
         nomeArquivo: '',
-        erroConexaoSupabase: false,
         origem: '',
     };
 
-    const cache = buscarNotaPorCodigo(numeroNormalizado);
-    if (cache && cache.nota) {
-        resultado.fontes.push(`Cache local: encontrada (ID ${cache.nota.id})`);
-        resultado.encontrada = true;
-        resultado.origem = 'cache';
-        resultado.dadosNF = {
-            encontrada: true,
-            numeroNF: cache.nota.numero,
-            cliente: cache.nota.cliente,
-            transportadora: cache.nota.transportadora,
-            artigo: cache.nota.artigo,
-            pedido: cache.nota.pedido,
-            quantidadeItens: cache.nota.quantidadeItens,
-            metros: cache.nota.metros,
-            pesoBruto: cache.nota.pesoBruto,
-            valorTotal: cache.nota.valor,
-            dataEmissao: cache.nota.dataEmissao,
-            origemXml: cache.nota.origemXml || '',
-        };
-        return resultado;
-    }
-    resultado.fontes.push('Cache local: nao encontrada');
-
-    const dadosSupa = await buscarDadosNFNoSupabase(numeroNormalizado);
-    if (dadosSupa && dadosSupa.encontrada) {
-        resultado.fontes.push('Supabase: encontrada');
-        resultado.encontrada = true;
-        resultado.origem = 'supabase';
-        resultado.dadosNF = dadosSupa;
-        return resultado;
-    }
-
-    if (dadosSupa && dadosSupa.erroConexao) {
-        resultado.erroConexaoSupabase = true;
-        resultado.fontes.push('Supabase: erro de conexao/autenticacao');
-    } else {
-        resultado.fontes.push('Supabase: nao encontrada');
-    }
-
-    try {
-        const logsRows = await supabaseRequest(
-            `${supabaseConfig.tables.importLogs || 'import_logs'}?select=arquivo,numero_nf,status,created_at&numero_nf=eq.${encodeURIComponent(numeroNormalizado)}&order=created_at.desc&limit=1`
-        );
-        if (Array.isArray(logsRows) && logsRows.length > 0) {
-            const log = logsRows[0];
-            resultado.fontes.push(`Import logs: encontrado (${log.status || 'status-desconhecido'})`);
-        } else {
-            resultado.fontes.push('Import logs: sem registro para este numero');
-        }
-    } catch (error) {
-        resultado.fontes.push('Import logs: falha ao consultar');
-    }
-
-    // Fallback final: consulta XML direto na SEFAZ (via proxy configurado).
+    // Fluxo único: consulta XML direto na SEFAZ (via proxy configurado).
     const sefaz = await consultarXmlNaSefaz(codigoBarrasOriginal || numeroNormalizado, numeroNormalizado);
     if (sefaz && sefaz.encontrada && sefaz.dadosNF) {
         resultado.fontes.push('SEFAZ: encontrada');
@@ -3145,9 +3091,9 @@ async function gerarPlanilhaFaturistaExcel() {
         const preview = nfsSemXml.slice(0, 10).join(', ');
         const sufixo = nfsSemXml.length > 10 ? ` e mais ${nfsSemXml.length - 10}` : '';
         alert(
-            `⚠️ Atenção: ${nfsSemXml.length} NF(s) deste filtro ainda não foram importadas da pasta nf-app para o banco.\n` +
+            `⚠️ Atenção: ${nfsSemXml.length} NF(s) deste filtro ainda não possuem origem XML vinculada.\n` +
             `NFs: ${preview}${sufixo}.\n\n` +
-            'A planilha será gerada mesmo assim. Assim que o importador Python processar os XMLs, todas as máquinas verão os dados completos.'
+            'A planilha será gerada mesmo assim. Você pode seguir e realizar nova consulta direta na SEFAZ quando necessário.'
         );
     }
 
@@ -3525,21 +3471,17 @@ async function handleBiparFaturamento() {
     // Busca em cascata: cache local → Supabase.
     const diagnostico = await diagnosticarBuscaNF(numeroExtraido, codigoBarras);
     const dadosNF = diagnostico.dadosNF;
-    const erroConexaoSupabase = diagnostico.erroConexaoSupabase;
 
     // ─── 3. Bloqueia somente se não achou em nenhuma fonte ─────────
     if (!dadosNF || !dadosNF.encontrada) {
-        const msgConexao = erroConexaoSupabase
-            ? '• ⚠️ Falha na consulta ao Supabase (sessão expirada?). Tente sair e entrar novamente.'
-            : '• Verifique se o importador Python (run_importer.bat) está rodando em alguma máquina da rede';
         const resumoFontes = diagnostico.fontes.map((fonte) => `• ${fonte}`).join('\n');
         alert(
             `❌ NF ${numeroExtraido} não encontrada.\n\n` +
             'Resultado da análise:\n' +
             `${resumoFontes}\n\n` +
             'Verifique:\n' +
-            '• Se o XML desta NF está na pasta nf-app\n' +
-            msgConexao
+            '• Se a chave da NF é válida e pertence ao seu CNPJ\n' +
+            '• Se o endpoint SEFAZ está configurado e ativo no ambiente publicado'
         );
         return;
     }
@@ -3570,7 +3512,7 @@ async function handleBiparFaturamento() {
         ].filter(Boolean).join('\n');
         const continuar = confirm(
             `⚠️ NF ${numeroExtraido} encontrada, mas com dados incompletos:\n${motivos}\n\n` +
-            'O importador Python pode ainda não ter processado o XML completo.\n\n' +
+            'O retorno da SEFAZ veio incompleto para esta consulta.\n\n' +
             'Deseja prosseguir mesmo assim?'
         );
         if (!continuar) return;
