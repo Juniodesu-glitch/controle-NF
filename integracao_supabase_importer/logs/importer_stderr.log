@@ -1,7 +1,4 @@
-2026-03-10 15:43:08,869 [INFO] Importer started
-2026-03-10 15:43:08,872 [INFO] Source dir: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app
-2026-03-10 15:43:08,873 [INFO] Poll seconds: 3
-2026-03-10 15:43:08,873 [INFO] IMPORTER_FORCE_CONTINUOUS enabled: RUN_ONCE will be ignored
-2026-03-10 15:43:09,722 [INFO] Importado: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app\danfe_519367187.xml (NF 393911)
-2026-03-10 15:50:46,517 [INFO] Importado: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app\danfe_669996641 (2).xml (NF 400200)
-2026-03-10 15:52:39,144 [INFO] Importado: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app\danfe_998823650 (1).xml (NF 400474)
+2026-03-11 07:03:52,894 [INFO] Importer started
+2026-03-11 07:03:52,895 [INFO] Source dir: C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app
+2026-03-11 07:03:52,895 [INFO] Poll seconds: 3
+2026-03-11 07:03:52,895 [INFO] IMPORTER_FORCE_CONTINUOUS enabled: RUN_ONCE will be ignored

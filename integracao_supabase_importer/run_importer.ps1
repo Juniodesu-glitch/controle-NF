@@ -7,15 +7,17 @@ if ([string]::IsNullOrWhiteSpace($env:NF_SOURCE_DIR)) {
     $env:NF_SOURCE_DIR = 'C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app'
 }
 
-# Evita herdar variáveis globais de execução única no Windows.
+# Evita herdar variaveis globais de execucao unica no Windows.
 $env:RUN_ONCE = '0'
 $env:FORCE_REIMPORT_ALL = '0'
 $env:IMPORTER_FORCE_CONTINUOUS = '1'
 
-# Mantém varredura frequente mesmo quando há POLL_SECONDS global no Windows.
+# Mantem varredura frequente mesmo quando ha POLL_SECONDS global no Windows.
 if ([string]::IsNullOrWhiteSpace($env:POLL_SECONDS) -or $env:POLL_SECONDS -eq '20') {
     $env:POLL_SECONDS = '3'
 }
+
+$MAX_LOG_SIZE_MB = 10
 
 $logDir = Join-Path $scriptDir 'logs'
 if (-not (Test-Path $logDir)) {
@@ -30,6 +32,16 @@ function Write-ManagerLog([string]$message) {
     $line = "[$ts] $message"
     Add-Content -Path $stdoutLog -Value $line
     Write-Host $line
+}
+
+function Rotate-LogIfNeeded([string]$logPath) {
+    if (-not (Test-Path $logPath)) { return }
+    $sizeMB = (Get-Item $logPath).Length / 1MB
+    if ($sizeMB -ge $MAX_LOG_SIZE_MB) {
+        $bak = "$logPath.bak"
+        if (Test-Path $bak) { Remove-Item $bak -Force }
+        Rename-Item $logPath $bak -Force
+    }
 }
 
 function Test-PythonExecutable([string]$exePath) {
@@ -108,7 +120,10 @@ Write-ManagerLog "Versão detectada: $pythonVersion"
 
 while ($true) {
     try {
-        Write-ManagerLog 'Garantindo dependências Python...'
+        Rotate-LogIfNeeded $stdoutLog
+        Rotate-LogIfNeeded $stderrLog
+
+        Write-ManagerLog 'Garantindo dependencias Python...'
         if ($pythonExe -like '* -3') {
             & $pyCmd.Source -3 -m pip install -r requirements.txt | Out-Null
         } else {
