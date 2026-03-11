@@ -24,6 +24,9 @@ const appState = {
         transportadorasFaturistaAtualizadoEm: 0,
         transportadorasFaturistaTtlMs: 15000,
     },
+    filtros: {
+        transportadoraFaturista: '',
+    },
 };
 
 // Dados simulados para demonstração
