@@ -17,7 +17,13 @@ const appState = {
     scanTimers: {
         faturamento: null,
         expedicao: null,
-    }
+    },
+    cache: {
+        transportadorasFaturistaXml: [],
+        carregandoTransportadorasFaturista: false,
+        transportadorasFaturistaAtualizadoEm: 0,
+        transportadorasFaturistaTtlMs: 15000,
+    },
 };
 
 // Dados simulados para demonstração
