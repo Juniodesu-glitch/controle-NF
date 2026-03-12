@@ -28,6 +28,15 @@ function extractXml(payload) {
   if (typeof payload === 'string') return payload;
   if (typeof payload !== 'object') return '';
 
+  // Formato comum da API Qive/Arquivei: { data: [{ access_key, xml }] }
+  if (Array.isArray(payload.data) && payload.data.length > 0) {
+    for (const doc of payload.data) {
+      if (doc && typeof doc.xml === 'string' && doc.xml.trim()) {
+        return doc.xml;
+      }
+    }
+  }
+
   const keys = ['xml', 'xmlContent', 'xml_conteudo', 'conteudoXml', 'conteudo_xml', 'content'];
   for (const key of keys) {
     const value = payload[key];
@@ -98,6 +107,13 @@ module.exports = async function handler(req, res) {
   const upstreamUrlEnv = firstEnv(upstreamUrlCandidates);
   const upstreamUrl = upstreamUrlEnv.value;
 
+  const providerEnv = firstEnv([
+    'SEFAZ_PROVIDER',
+    'SEFAZ_XML_PROVIDER',
+    'SEFAZ_UPSTREAM_PROVIDER',
+  ]);
+  const provider = String(providerEnv.value || '').trim().toLowerCase();
+
   const selfPath = '/api/sefaz/xml';
   const pointsToSelf = upstreamUrl.includes(selfPath);
 
@@ -145,11 +161,98 @@ module.exports = async function handler(req, res) {
     ]);
     const upstreamToken = String(upstreamTokenEnv.value || '').trim();
 
+    const upstreamApiIdEnv = firstEnv([
+      'SEFAZ_UPSTREAM_API_ID',
+      'SEFAZ_XML_UPSTREAM_API_ID',
+      'QIVE_API_ID',
+      'ARQUIVEI_API_ID',
+    ]);
+    const upstreamApiId = String(upstreamApiIdEnv.value || '').trim();
+
+    const upstreamApiKeyEnv = firstEnv([
+      'SEFAZ_UPSTREAM_API_KEY',
+      'SEFAZ_XML_UPSTREAM_API_KEY',
+      'QIVE_API_KEY',
+      'ARQUIVEI_API_KEY',
+    ]);
+    const upstreamApiKey = String(upstreamApiKeyEnv.value || '').trim();
+
     const headers = {
       Accept: 'application/json, text/xml, application/xml, text/plain',
     };
     if (upstreamToken) {
       headers.Authorization = `Bearer ${upstreamToken}`;
+    }
+
+    const isQiveProvider =
+      provider === 'qive'
+      || provider === 'arquivei'
+      || upstreamUrl.includes('api.arquivei.com.br')
+      || upstreamUrl.includes('sandbox-api.arquivei.com.br');
+
+    if (isQiveProvider) {
+      if (!chaveAcesso) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Para Qive, informe a chave de acesso completa (44 digitos) no codigo bipada.',
+        });
+      }
+
+      if (!upstreamApiId || !upstreamApiKey) {
+        return res.status(503).json({
+          ok: false,
+          code: 'QIVE_CREDENTIALS_MISSING',
+          error: 'Credenciais da API Qive nao configuradas (API-ID/API-KEY).',
+          checked: {
+            SEFAZ_UPSTREAM_API_ID: Boolean(String(process.env.SEFAZ_UPSTREAM_API_ID || '').trim()),
+            SEFAZ_UPSTREAM_API_KEY: Boolean(String(process.env.SEFAZ_UPSTREAM_API_KEY || '').trim()),
+            QIVE_API_ID: Boolean(String(process.env.QIVE_API_ID || '').trim()),
+            QIVE_API_KEY: Boolean(String(process.env.QIVE_API_KEY || '').trim()),
+          },
+        });
+      }
+
+      const base = upstreamUrl.replace(/\/$/, '');
+      const qiveQuery = new URLSearchParams();
+      qiveQuery.append('access_key[]', chaveAcesso);
+      qiveQuery.append('limit', '1');
+      qiveQuery.append('format_type', 'xml');
+      const qiveUrl = `${base}/v1/nfe/received?${qiveQuery.toString()}`;
+
+      const qiveResp = await fetch(qiveUrl, {
+        method: 'GET',
+        headers: {
+          ...headers,
+          'x-api-id': upstreamApiId,
+          'x-api-key': upstreamApiKey,
+        },
+      });
+
+      if (!qiveResp.ok) {
+        const err = await qiveResp.text();
+        return res.status(502).json({ ok: false, error: `Qive ${qiveResp.status}: ${err || 'sem detalhes'}` });
+      }
+
+      const payload = await qiveResp.json();
+      const xml = extractXml(payload);
+
+      if (!xml.trim()) {
+        return res.status(404).json({ ok: false, error: 'XML nao encontrado na Qive para a chave informada' });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        source: 'qive-api',
+        sourceEnv: {
+          upstreamUrl: upstreamUrlEnv.key,
+          provider: providerEnv.key || 'AUTO_BY_URL',
+          upstreamApiId: upstreamApiIdEnv.key || '',
+          upstreamApiKey: upstreamApiKeyEnv.key || '',
+        },
+        numeroNF,
+        chaveAcesso,
+        xml,
+      });
     }
 
     let upstreamResp;
