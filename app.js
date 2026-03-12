@@ -1556,10 +1556,17 @@ async function consultarXmlNaSefaz(codigoBarrasOriginal, numeroFallback) {
             const codigoErro = String(payloadErro?.code || '').trim();
             const mensagemErro = String(payloadErro?.error || erroBruto || 'sem detalhes').trim();
 
+            if (codigoErro === 'QIVE_CREDENTIALS_MISSING' || mensagemErro.includes('Credenciais da API Qive')) {
+                return {
+                    erro:
+                        'Qive não configurado na Vercel (configure SEFAZ_UPSTREAM_API_ID e SEFAZ_UPSTREAM_API_KEY em Project Settings > Environment Variables)'
+                };
+            }
+
             if (codigoErro === 'SEFAZ_UPSTREAM_URL_MISSING' || mensagemErro.includes('SEFAZ_UPSTREAM_URL')) {
                 return {
                     erro:
-                        'endpoint SEFAZ não configurado na Vercel (configure SEFAZ_UPSTREAM_URL ou SEFAZ_XML_UPSTREAM_URL em Project Settings > Environment Variables)'
+                        'endpoint não configurado na Vercel (configure SEFAZ_PROVIDER=qive e, se quiser, SEFAZ_UPSTREAM_URL ou QIVE_BASE_URL em Project Settings > Environment Variables)'
                 };
             }
 

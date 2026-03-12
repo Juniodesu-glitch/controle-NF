@@ -114,14 +114,43 @@ module.exports = async function handler(req, res) {
   ]);
   const provider = String(providerEnv.value || '').trim().toLowerCase();
 
-  const selfPath = '/api/sefaz/xml';
-  const pointsToSelf = upstreamUrl.includes(selfPath);
+  const qiveBaseUrlEnv = firstEnv([
+    'QIVE_BASE_URL',
+    'ARQUIVEI_BASE_URL',
+    'SEFAZ_QIVE_BASE_URL',
+  ]);
+  const qiveSandboxEnv = firstEnv([
+    'QIVE_SANDBOX',
+    'ARQUIVEI_SANDBOX',
+  ]);
+  const qiveSandbox = ['1', 'true', 'yes', 'on'].includes(
+    String(qiveSandboxEnv.value || '').trim().toLowerCase()
+  );
 
-  if (!upstreamUrl || pointsToSelf) {
+  const inferredQiveBaseUrl =
+    String(qiveBaseUrlEnv.value || '').trim()
+    || (qiveSandbox ? 'https://sandbox-api.arquivei.com.br' : 'https://api.arquivei.com.br');
+
+  const isQiveProvider =
+    provider === 'qive'
+    || provider === 'arquivei'
+    || upstreamUrl.includes('api.arquivei.com.br')
+    || upstreamUrl.includes('sandbox-api.arquivei.com.br')
+    || Boolean(String(qiveBaseUrlEnv.value || '').trim());
+
+  const effectiveUpstreamUrl = isQiveProvider ? inferredQiveBaseUrl : upstreamUrl;
+
+  const selfPath = '/api/sefaz/xml';
+  const pointsToSelf = effectiveUpstreamUrl.includes(selfPath);
+
+  if (!effectiveUpstreamUrl || pointsToSelf) {
     const available = {};
     for (const key of upstreamUrlCandidates) {
       available[key] = Boolean(String(process.env[key] || '').trim());
     }
+    available.QIVE_BASE_URL = Boolean(String(process.env.QIVE_BASE_URL || '').trim());
+    available.ARQUIVEI_BASE_URL = Boolean(String(process.env.ARQUIVEI_BASE_URL || '').trim());
+    available.SEFAZ_PROVIDER = Boolean(String(process.env.SEFAZ_PROVIDER || '').trim());
 
     return res.status(503).json({
       ok: false,
@@ -184,12 +213,6 @@ module.exports = async function handler(req, res) {
       headers.Authorization = `Bearer ${upstreamToken}`;
     }
 
-    const isQiveProvider =
-      provider === 'qive'
-      || provider === 'arquivei'
-      || upstreamUrl.includes('api.arquivei.com.br')
-      || upstreamUrl.includes('sandbox-api.arquivei.com.br');
-
     if (isQiveProvider) {
       if (!chaveAcesso) {
         return res.status(400).json({
@@ -212,7 +235,7 @@ module.exports = async function handler(req, res) {
         });
       }
 
-      const base = upstreamUrl.replace(/\/$/, '');
+      const base = effectiveUpstreamUrl.replace(/\/$/, '');
       const qiveQuery = new URLSearchParams();
       qiveQuery.append('access_key[]', chaveAcesso);
       qiveQuery.append('limit', '1');
@@ -244,7 +267,7 @@ module.exports = async function handler(req, res) {
         ok: true,
         source: 'qive-api',
         sourceEnv: {
-          upstreamUrl: upstreamUrlEnv.key,
+          upstreamUrl: upstreamUrlEnv.key || qiveBaseUrlEnv.key || 'QIVE_DEFAULT_BASE_URL',
           provider: providerEnv.key || 'AUTO_BY_URL',
           upstreamApiId: upstreamApiIdEnv.key || '',
           upstreamApiKey: upstreamApiKeyEnv.key || '',
@@ -261,14 +284,14 @@ module.exports = async function handler(req, res) {
       query.set('codigo', codigo);
       if (chaveAcesso) query.set('chave', chaveAcesso);
       if (numeroNF) query.set('numeroNF', numeroNF);
-      const joiner = upstreamUrl.includes('?') ? '&' : '?';
-      upstreamResp = await fetch(`${upstreamUrl}${joiner}${query.toString()}`, {
+      const joiner = effectiveUpstreamUrl.includes('?') ? '&' : '?';
+      upstreamResp = await fetch(`${effectiveUpstreamUrl}${joiner}${query.toString()}`, {
         method: 'GET',
         headers,
       });
     } else {
       headers['Content-Type'] = 'application/json';
-      upstreamResp = await fetch(upstreamUrl, {
+      upstreamResp = await fetch(effectiveUpstreamUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({ codigo, chaveAcesso, numeroNF }),
