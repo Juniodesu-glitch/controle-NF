@@ -2939,12 +2939,22 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             itensNota.forEach((item) => {
                 const unidade = String(item.unidade || '').trim().toLowerCase();
                 const qtdItem = Number(item.quantidade || 0);
+                let metrosLinha = 0;
+                let pcsLinha = 0;
+                if (unidade.startsWith('m')) {
+                    metrosLinha = qtdItem;
+                } else if (unidade.startsWith('p')) {
+                    pcsLinha = qtdItem;
+                } else {
+                    // Se não for possível identificar, distribui tudo em pcs
+                    pcsLinha = qtdItem;
+                }
                 linhas.push({
                     artigo: String(item.descricao || artigo || '-'),
                     pedido,
                     pesoBruto,
-                    metros: unidade.startsWith('m') ? qtdItem : metros,
-                    pcs: qtdItem > 0 ? qtdItem : pcs,
+                    metros: metrosLinha > 0 ? metrosLinha : 0,
+                    pcs: pcsLinha > 0 ? pcsLinha : 0,
                     cliente,
                     nf: String(nota.numero || numeroNf || '-'),
                     res: derivarRes(pedido),
@@ -2955,6 +2965,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
                 });
             });
         } else {
+            // Se não houver itens, mantém o comportamento anterior
             linhas.push({
                 artigo,
                 pedido,
