@@ -59,6 +59,7 @@ const supabaseConfig = {
         perfis: 'profiles',
         solicitacoes: 'solicitacoes_acesso',
         nfs: 'nfs',
+        nfItens: 'nf_itens',
         bipagens: 'bipagens',
         importLogs: 'import_logs',
     },
@@ -67,6 +68,7 @@ const supabaseConfig = {
 appState.supabase = {
     conectado: false,
     nfIdPorNumero: {},
+    nfItensPorNfId: {},
 };
 
 appState.auth = {
@@ -435,6 +437,54 @@ function mapNfRowToLocal(row) {
     };
 }
 
+function mapNfItemRowToLocal(row) {
+    return {
+        id: row.id || Math.floor(Math.random() * 1_000_000_000),
+        nfId: row.nf_id,
+        codigo: String(row.codigo || ''),
+        descricao: String(row.descricao || ''),
+        unidade: String(row.unidade || ''),
+        quantidade: Number(row.quantidade || 0),
+        valorUnitario: Number(row.valor_unitario || 0),
+        valorTotal: Number(row.valor_total || 0),
+    };
+}
+
+function setNfItensCache(rows) {
+    const porNf = {};
+    if (Array.isArray(rows)) {
+        rows.forEach((row) => {
+            const item = mapNfItemRowToLocal(row);
+            const nfId = item.nfId;
+            if (!nfId) return;
+            if (!porNf[nfId]) porNf[nfId] = [];
+            porNf[nfId].push(item);
+        });
+    }
+    appState.supabase.nfItensPorNfId = porNf;
+}
+
+function obterItensDaNotaPorId(nfId) {
+    if (!nfId) return [];
+    const itens = appState.supabase.nfItensPorNfId?.[nfId];
+    return Array.isArray(itens) ? itens : [];
+}
+
+function obterItensDaNota(nota) {
+    if (!nota) return [];
+
+    const diretos = obterItensDaNotaPorId(nota.id);
+    if (diretos.length > 0) return diretos;
+
+    const numeroNota = String(nota.numero || '').replace(/\D/g, '');
+    if (!numeroNota) return [];
+
+    const nfMatch = appState.notasFiscais.find((nf) => String(nf.numero || '').replace(/\D/g, '') === numeroNota);
+    if (!nfMatch || !nfMatch.id) return [];
+
+    return obterItensDaNotaPorId(nfMatch.id);
+}
+
 function normalizarTipoBipagem(tipo) {
     const valor = String(tipo || '').trim().toLowerCase();
     if (!valor) return 'faturamento';
@@ -476,12 +526,15 @@ function mapBipagemRowToLocal(row, notasPorId) {
 
 async function carregarDadosSupabase() {
     try {
-        const [nfsRows, bipagensRows, solicitacoesRows, perfisRows] = await Promise.all([
+        const [nfsRows, nfItensRows, bipagensRows, solicitacoesRows, perfisRows] = await Promise.all([
             supabaseRequest(`${supabaseConfig.tables.nfs}?select=*&order=id.asc`).catch(() => []),
+            supabaseRequest(`${supabaseConfig.tables.nfItens}?select=*&order=id.asc`).catch(() => []),
             supabaseRequest(`${supabaseConfig.tables.bipagens}?select=*&order=id.asc`).catch(() => []),
             supabaseRequest(`${supabaseConfig.tables.solicitacoes}?select=*&order=id.asc`).catch(() => []),
             supabaseRequest(`${supabaseConfig.tables.perfis}?select=*&order=id.asc`).catch(() => []),
         ]);
+
+        setNfItensCache(Array.isArray(nfItensRows) ? nfItensRows : []);
 
         if (Array.isArray(nfsRows) && nfsRows.length > 0) {
             appState.notasFiscais = nfsRows.map(mapNfRowToLocal);
@@ -1358,13 +1411,18 @@ async function buscarDadosNFNoSupabase(numeroNF) {
         const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
         if (!numeroNormalizado) return null;
 
-        const mapRowToDadosNf = (row) => ({
+        const mapRowToDadosNf = (row, itensDaNf = []) => {
+            const primeiroItem = Array.isArray(itensDaNf)
+                ? itensDaNf.find((item) => String(item?.descricao || '').trim())
+                : null;
+
+            return ({
             encontrada: true,
             numeroNF: row.numero_nf,
             cliente: row.cliente,
             transportadora: row.transportadora,
-            produtoNome: resolverArtigoProdutoDaNf(row),
-            artigo: resolverArtigoProdutoDaNf(row),
+            produtoNome: primeiroItem ? String(primeiroItem.descricao || '') : resolverArtigoProdutoDaNf(row),
+            artigo: primeiroItem ? String(primeiroItem.descricao || '') : resolverArtigoProdutoDaNf(row),
             pedido: row.pedido,
             quantidadeItens: row.quantidade_itens,
             metros: row.metros,
@@ -1372,7 +1430,22 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             valorTotal: row.valor_total,
             dataEmissao: row.data_emissao,
             origemXml: row.origem_xml || '',
+            itens: itensDaNf,
+            nfId: row.id,
         });
+        };
+
+        const carregarItensPorNfId = async (nfId) => {
+            if (!nfId) return [];
+            const itensCache = obterItensDaNotaPorId(nfId);
+            if (itensCache.length > 0) return itensCache;
+
+            const itensRows = await supabaseRequest(
+                `${supabaseConfig.tables.nfItens}?select=*&nf_id=eq.${encodeURIComponent(nfId)}&order=id.asc`
+            ).catch(() => []);
+
+            return Array.isArray(itensRows) ? itensRows.map(mapNfItemRowToLocal) : [];
+        };
 
         const variantes = Array.from(new Set([
             numeroNormalizado,
@@ -1385,7 +1458,8 @@ async function buscarDadosNFNoSupabase(numeroNF) {
                 `${supabaseConfig.tables.nfs}?select=*&numero_nf=eq.${encodeURIComponent(variante)}&limit=1`
             );
             if (Array.isArray(rows) && rows.length > 0) {
-                return mapRowToDadosNf(rows[0]);
+                const itensDaNf = await carregarItensPorNfId(rows[0]?.id);
+                return mapRowToDadosNf(rows[0], itensDaNf);
             }
         }
 
@@ -1400,7 +1474,8 @@ async function buscarDadosNFNoSupabase(numeroNF) {
                 return numeroLinha === numeroNormalizado;
             });
             if (rowValida) {
-                return mapRowToDadosNf(rowValida);
+                const itensDaNf = await carregarItensPorNfId(rowValida?.id);
+                return mapRowToDadosNf(rowValida, itensDaNf);
             }
         }
 
@@ -2857,20 +2932,44 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
 
         const ts = parseDataParaFifo(dataNfRaw);
 
-        linhas.push({
-            artigo,
-            pedido,
-            pesoBruto,
-            metros,
-            pcs,
-            cliente,
-            nf: String(nota.numero || numeroNf || '-'),
-            res: derivarRes(pedido),
-            transp: transportadora,
-            dataNf: dataNfRaw,
-            ordemTs: ts,
-            origemXml: String(nota.origemXml || ''),
-        });
+        const itensNota = obterItensDaNota(nota)
+            .filter((item) => String(item?.descricao || '').trim());
+
+        if (itensNota.length > 0) {
+            itensNota.forEach((item) => {
+                const unidade = String(item.unidade || '').trim().toLowerCase();
+                const qtdItem = Number(item.quantidade || 0);
+                linhas.push({
+                    artigo: String(item.descricao || artigo || '-'),
+                    pedido,
+                    pesoBruto,
+                    metros: unidade.startsWith('m') ? qtdItem : metros,
+                    pcs: qtdItem > 0 ? qtdItem : pcs,
+                    cliente,
+                    nf: String(nota.numero || numeroNf || '-'),
+                    res: derivarRes(pedido),
+                    transp: transportadora,
+                    dataNf: dataNfRaw,
+                    ordemTs: ts,
+                    origemXml: String(nota.origemXml || ''),
+                });
+            });
+        } else {
+            linhas.push({
+                artigo,
+                pedido,
+                pesoBruto,
+                metros,
+                pcs,
+                cliente,
+                nf: String(nota.numero || numeroNf || '-'),
+                res: derivarRes(pedido),
+                transp: transportadora,
+                dataNf: dataNfRaw,
+                ordemTs: ts,
+                origemXml: String(nota.origemXml || ''),
+            });
+        }
     }
 
     linhas.sort((a, b) => {
@@ -3199,22 +3298,47 @@ function renderizarFaturista() {
         </div>
     `;
 
-    const linhasTabela = nfsPendentes.length === 0
+    const nfsPendentesExpandido = nfsPendentes.flatMap((nf) => {
+        const itens = obterItensDaNota(nf).filter((item) => String(item?.descricao || '').trim());
+        if (itens.length === 0) {
+            return [{
+                ...nf,
+                artigoLinha: nf.artigo,
+                quantidadeItensLinha: nf.quantidadeItens,
+                metrosLinha: nf.metros,
+                multiItem: false,
+            }];
+        }
+
+        return itens.map((item) => {
+            const unidade = String(item.unidade || '').trim().toLowerCase();
+            const qtdItem = Number(item.quantidade || 0);
+            return {
+                ...nf,
+                artigoLinha: String(item.descricao || nf.artigo || '-'),
+                quantidadeItensLinha: qtdItem > 0 ? qtdItem : Number(nf.quantidadeItens || 0),
+                metrosLinha: unidade.startsWith('m') ? qtdItem : Number(nf.metros || 0),
+                multiItem: itens.length > 1,
+            };
+        });
+    });
+
+    const linhasTabela = nfsPendentesExpandido.length === 0
         ? `<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-secondary);">
                 ${appState.filtros.transportadoraFaturista
                     ? 'Nenhuma NF pendente para esta transportadora.'
                     : 'Nenhuma NF pendente no momento. Verifique se os XMLs foram importados para o Supabase.'}
            </td></tr>`
-        : nfsPendentes.map((nf, i) => `
+        : nfsPendentesExpandido.map((nf, i) => `
             <tr style="background:${i % 2 === 0 ? 'var(--bg-card,#16161e)' : 'var(--bg-secondary,#1e1e2e)'};">
                 <td style="padding:6px 8px;text-align:center;color:var(--text-secondary);white-space:nowrap;">${escH(fmtData(nf.dataEmissao))}</td>
                 <td style="padding:6px 8px;text-align:center;font-weight:700;color:#fff200;white-space:nowrap;">${escH(nf.numero)}</td>
                 <td style="padding:6px 8px;text-align:left;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.cliente)}</td>
-                <td style="padding:6px 8px;text-align:left;color:var(--text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.artigo)}</td>
+                <td style="padding:6px 8px;text-align:left;color:var(--text-secondary);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.artigoLinha || nf.artigo)}</td>
                 <td style="padding:6px 8px;text-align:center;color:var(--text-secondary);">${escH(nf.pedido)}</td>
                 <td style="padding:6px 8px;text-align:left;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escH(nf.transportadora)}</td>
-                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.metros)}</td>
-                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.quantidadeItens)}</td>
+                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.metrosLinha ?? nf.metros)}</td>
+                <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.quantidadeItensLinha ?? nf.quantidadeItens)}</td>
                 <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.pesoBruto)}</td>
                 <td style="padding:6px 8px;text-align:right;">${fmtNum(nf.valor)}</td>
             </tr>
@@ -3324,7 +3448,7 @@ function renderizarFaturista() {
                             ${appState.filtros.transportadoraFaturista ? ` — <span style="color:var(--accent-color,#7c3aed);">${escH(appState.filtros.transportadoraFaturista)}</span>` : ''}
                         </h3>
                         <span style="background:var(--badge-bg,#2a2a3e);color:var(--text-secondary);border-radius:12px;padding:4px 12px;font-size:13px;">
-                            ${nfsPendentes.length} NF${nfsPendentes.length !== 1 ? 's' : ''}
+                            ${nfsPendentesExpandido.length} linha${nfsPendentesExpandido.length !== 1 ? 's' : ''}
                         </span>
                     </div>
                     <div style="overflow-x:auto;">
