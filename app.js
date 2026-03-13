@@ -1502,6 +1502,37 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
     return resultado;
 }
 
+async function tentarImportacaoOnline(numeroNF) {
+    try {
+        const numero = String(numeroNF || '').replace(/\D/g, '');
+        if (!numero) return { ok: false, motivo: 'numero_invalido' };
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
+
+        const response = await fetch(`/api/import/storage?numero=${encodeURIComponent(numero)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ numero }),
+            signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+            return { ok: false, motivo: `http_${response.status}` };
+        }
+
+        const payload = await response.json().catch(() => ({}));
+        return {
+            ok: Boolean(payload?.ok),
+            imported: Number(payload?.imported || 0),
+            payload,
+        };
+    } catch (error) {
+        return { ok: false, motivo: error?.message || String(error) };
+    }
+}
+
 async function buscarDadosNFNoXML(numeroNF) {
     // Removido: busca agora é feita exclusivamente via Supabase.
     // O importer Python envia os XMLs continuamente para o banco.
@@ -3356,6 +3387,49 @@ async function handleBiparFaturamento() {
 
     // ─── 3. Bloqueia somente se não achou em nenhuma fonte ─────────
     if (!dadosNF || !dadosNF.encontrada) {
+        const importacaoOnline = await tentarImportacaoOnline(numeroExtraido);
+        if (importacaoOnline.ok) {
+            await carregarDadosSupabase().catch(() => null);
+            const diagnosticoRetry = await diagnosticarBuscaNF(numeroExtraido, codigoBarras);
+            if (diagnosticoRetry && diagnosticoRetry.encontrada && diagnosticoRetry.dadosNF) {
+                let resultadoRetry = buscarNotaPorCodigo(numeroExtraido);
+                let notaRetry = resultadoRetry ? resultadoRetry.nota : criarNotaAPartirDaLeitura(numeroExtraido);
+
+                aplicarDadosXMLNaNota(notaRetry, diagnosticoRetry.dadosNF);
+                await sincronizarNfSupabase(notaRetry).catch(() => null);
+
+                if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
+                    await sincronizarNfSupabase(notaRetry).catch(() => null);
+                    void baixarXmlDaNF(numeroExtraido);
+
+                    appState.ultimaBipagemFaturista = {
+                        numero: notaRetry.numero,
+                        cliente: notaRetry.cliente,
+                        transportadora: notaRetry.transportadora,
+                        artigo: notaRetry.artigo,
+                        pedido: notaRetry.pedido,
+                        quantidadeItens: notaRetry.quantidadeItens,
+                        metros: notaRetry.metros,
+                        pesoBruto: notaRetry.pesoBruto,
+                        valor: notaRetry.valor,
+                        dataEmissao: notaRetry.dataEmissao,
+                    };
+                    await carregarDadosSupabase().catch(() => null);
+                    if (input) {
+                        input.value = '';
+                    }
+                    renderizar();
+                    setTimeout(() => {
+                        const novoInput = document.getElementById('codigoBarras');
+                        if (novoInput) {
+                            novoInput.focus();
+                        }
+                    }, 120);
+                    return;
+                }
+            }
+        }
+
         const resumoFontes = diagnostico.fontes.map((fonte) => `• ${fonte}`).join('\n');
         alert(
             `❌ NF ${numeroExtraido} não encontrada.\n\n` +
@@ -3363,7 +3437,7 @@ async function handleBiparFaturamento() {
             `${resumoFontes}\n\n` +
             'Verifique:\n' +
             '• Se a chave da NF está correta (44 dígitos)\n' +
-            '• Se o XML já foi importado da pasta para o Supabase'
+            '• Se o XML está no bucket online do sistema para importação automática'
         );
         return;
     }
