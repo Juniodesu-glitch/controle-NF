@@ -2936,6 +2936,7 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
             .filter((item) => String(item?.descricao || '').trim());
 
         if (itensNota.length > 0) {
+            // Exibe todos os itens da NF, na ordem do XML
             itensNota.forEach((item) => {
                 const unidade = String(item.unidade || '').trim().toLowerCase();
                 const qtdItem = Number(item.quantidade || 0);
@@ -2953,8 +2954,8 @@ async function montarLinhasExportacaoFaturista(transportadoraFiltro, incluirFall
                     artigo: String(item.descricao || artigo || '-'),
                     pedido,
                     pesoBruto,
-                    metros: metrosLinha > 0 ? metrosLinha : 0,
-                    pcs: pcsLinha > 0 ? pcsLinha : 0,
+                    metros: metrosLinha,
+                    pcs: pcsLinha,
                     cliente,
                     nf: String(nota.numero || numeroNf || '-'),
                     res: derivarRes(pedido),
