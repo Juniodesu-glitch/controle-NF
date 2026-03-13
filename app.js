@@ -8,6 +8,7 @@ const APP_TITLE = 'System';
 const appState = {
     currentPage: 'login',
     currentUser: null,
+    adminActiveTab: 'solicitacoes',
     notasFiscais: [],
     bipagensFaturamento: [],
     bipagensExpedicao: [],
@@ -61,13 +62,6 @@ const supabaseConfig = {
         bipagens: 'bipagens',
         importLogs: 'import_logs',
     },
-};
-
-const sefazConfig = {
-    // Em produção HTTPS, prefira endpoint HTTPS no mesmo domínio (ex.: /api/sefaz/xml).
-    url: runtimeConfig.sefazProxyUrl || runtimeConfig.sefazXmlApiUrl || '/api/sefaz/xml',
-    method: String(runtimeConfig.sefazProxyMethod || runtimeConfig.sefazXmlApiMethod || 'POST').toUpperCase(),
-    apiKey: runtimeConfig.sefazProxyApiKey || runtimeConfig.sefazXmlApiKey || '',
 };
 
 appState.supabase = {
@@ -388,6 +382,40 @@ function mapSolicitacaoRowToLocal(row) {
     };
 }
 
+function extrairPrimeiroProdutoDoXmlConteudo(xmlConteudo) {
+    const conteudo = String(xmlConteudo || '').trim();
+    if (!conteudo) return '';
+
+    const match = conteudo.match(/<(?:\w+:)?xProd>([^<]+)<\/(?:\w+:)?xProd>/i);
+    if (!match || !match[1]) return '';
+
+    return String(match[1])
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .trim();
+}
+
+function resolverArtigoProdutoDaNf(row) {
+    const candidatos = [
+        row?.produto_nome,
+        row?.produto,
+        row?.descricao_produto,
+        row?.descricao,
+        row?.artigo,
+        extrairPrimeiroProdutoDoXmlConteudo(row?.xml_conteudo),
+    ];
+
+    for (const candidato of candidatos) {
+        const texto = String(candidato || '').trim();
+        if (texto) return texto;
+    }
+
+    return '-';
+}
+
 function mapNfRowToLocal(row) {
     return {
         id: row.id || Math.floor(Math.random() * 1_000_000_000),
@@ -395,7 +423,7 @@ function mapNfRowToLocal(row) {
         serie: row.serie || '1',
         cliente: row.cliente || 'Cliente não informado',
         transportadora: row.transportadora || 'Não informada',
-        artigo: row.artigo || '-',
+        artigo: resolverArtigoProdutoDaNf(row),
         pedido: row.pedido || '-',
         quantidadeItens: Number(row.quantidade_itens || 0),
         metros: Number(row.metros || 0),
@@ -1303,7 +1331,7 @@ function aplicarDadosXMLNaNota(nota, dadosXML) {
 
     nota.cliente = dadosXML.cliente || nota.cliente || 'Cliente não informado';
     nota.transportadora = dadosXML.transportadora || nota.transportadora || 'Não informada';
-    nota.artigo = dadosXML.artigo || nota.artigo || '-';
+    nota.artigo = dadosXML.produtoNome || dadosXML.artigo || nota.artigo || '-';
     nota.pedido = dadosXML.pedido || nota.pedido || '-';
     nota.quantidadeItens = Number(dadosXML.quantidadeItens ?? nota.quantidadeItens ?? 0);
     nota.metros = Number(dadosXML.metros ?? nota.metros ?? 0);
@@ -1335,7 +1363,8 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             numeroNF: row.numero_nf,
             cliente: row.cliente,
             transportadora: row.transportadora,
-            artigo: row.artigo,
+            produtoNome: resolverArtigoProdutoDaNf(row),
+            artigo: resolverArtigoProdutoDaNf(row),
             pedido: row.pedido,
             quantidadeItens: row.quantidade_itens,
             metros: row.metros,
@@ -1419,197 +1448,6 @@ async function baixarXmlDaNF(numeroNF) {
     }
 }
 
-function salvarXmlComoDownload(xmlConteudo, nomeArquivoBase) {
-    if (!xmlConteudo) return false;
-    const blob = new Blob([xmlConteudo], { type: 'application/xml;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = nomeArquivoBase || `NF_${Date.now()}.xml`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    return true;
-}
-
-function getXmlTagText(xmlDoc, tagName) {
-    const direct = xmlDoc.getElementsByTagName(tagName);
-    if (direct && direct.length > 0) {
-        const value = String(direct[0].textContent || '').trim();
-        if (value) return value;
-    }
-
-    const all = xmlDoc.getElementsByTagName('*');
-    for (let i = 0; i < all.length; i += 1) {
-        const node = all[i];
-        if (String(node.localName || '').toLowerCase() === String(tagName).toLowerCase()) {
-            const value = String(node.textContent || '').trim();
-            if (value) return value;
-        }
-    }
-
-    return '';
-}
-
-function getXmlTextByXPath(xmlDoc, xpath) {
-    try {
-        const value = xmlDoc.evaluate(
-            xpath,
-            xmlDoc,
-            null,
-            XPathResult.STRING_TYPE,
-            null
-        ).stringValue;
-        return String(value || '').trim();
-    } catch {
-        return '';
-    }
-}
-
-function mapXmlConteudoParaDadosNF(xmlConteudo, numeroFallback, origemLabel = 'sefaz-proxy') {
-    try {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(xmlConteudo, 'application/xml');
-
-        const numeroXML = (getXmlTagText(doc, 'nNF') || String(numeroFallback || '')).replace(/\D/g, '');
-        const cliente = getXmlTextByXPath(doc, "//*[local-name()='dest']/*[local-name()='xNome']") || 'Cliente não informado';
-        const transportadora =
-            getXmlTextByXPath(doc, "//*[local-name()='transp']/*[local-name()='transporta']/*[local-name()='xNome']") ||
-            'Não informada';
-        const pedido = getXmlTagText(doc, 'xPed') || getXmlTagText(doc, 'nPed') || '-';
-        const artigo = getXmlTagText(doc, 'xProd') || '-';
-
-        const qComList = Array.from(doc.getElementsByTagName('qCom'));
-        const quantidadeItens = qComList.reduce((acc, n) => {
-            const val = Number(String(n.textContent || '').replace(',', '.'));
-            return acc + (Number.isFinite(val) ? val : 0);
-        }, 0);
-
-        const pesoBruto = Number(String(getXmlTagText(doc, 'pesoB') || '0').replace(',', '.')) || 0;
-        const valorTotal = Number(String(getXmlTagText(doc, 'vNF') || '0').replace(',', '.')) || 0;
-        const dataEmissaoBruta = getXmlTagText(doc, 'dhEmi') || getXmlTagText(doc, 'dEmi') || '';
-        const dataEmissao = dataEmissaoBruta ? String(dataEmissaoBruta).slice(0, 10) : '';
-
-        return {
-            encontrada: true,
-            numeroNF: numeroXML,
-            cliente,
-            transportadora,
-            artigo,
-            pedido,
-            quantidadeItens,
-            metros: 0,
-            pesoBruto,
-            valorTotal,
-            dataEmissao,
-            origemXml: origemLabel,
-        };
-    } catch (error) {
-        console.warn('[SEFAZ] Falha ao parsear XML:', error?.message || error);
-        return null;
-    }
-}
-
-async function consultarXmlNaSefaz(codigoBarrasOriginal, numeroFallback) {
-    try {
-        const codigo = String(codigoBarrasOriginal || '').trim();
-        if (!codigo) return null;
-
-        const chaveAcesso = String(codigo).replace(/\D/g, '');
-        const numeroNF = String(numeroFallback || extrairNumeroNF(codigo)).replace(/\D/g, '');
-
-        const headers = {
-            'Content-Type': 'application/json',
-            Accept: 'application/json, text/xml, application/xml, text/plain',
-        };
-        if (sefazConfig.apiKey) {
-            headers['X-Api-Key'] = sefazConfig.apiKey;
-        }
-
-        let response;
-        if (sefazConfig.method === 'GET') {
-            const query = new URLSearchParams();
-            query.set('codigo', codigo);
-            if (chaveAcesso.length === 44) query.set('chave', chaveAcesso);
-            if (numeroNF) query.set('numeroNF', numeroNF);
-            response = await fetch(`${sefazConfig.url}?${query.toString()}`, { method: 'GET', headers });
-        } else {
-            response = await fetch(sefazConfig.url, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    codigo,
-                    chaveAcesso: chaveAcesso.length === 44 ? chaveAcesso : '',
-                    numeroNF,
-                }),
-            });
-        }
-
-        if (!response.ok) {
-            const erroBruto = await response.text();
-            let payloadErro = null;
-
-            try {
-                payloadErro = erroBruto ? JSON.parse(erroBruto) : null;
-            } catch {
-                payloadErro = null;
-            }
-
-            const codigoErro = String(payloadErro?.code || '').trim();
-            const mensagemErro = String(payloadErro?.error || erroBruto || 'sem detalhes').trim();
-
-            if (codigoErro === 'QIVE_CREDENTIALS_MISSING' || mensagemErro.includes('Credenciais da API Qive')) {
-                return {
-                    erro:
-                        'Qive não configurado na Vercel (configure SEFAZ_UPSTREAM_API_ID e SEFAZ_UPSTREAM_API_KEY em Project Settings > Environment Variables)'
-                };
-            }
-
-            if (codigoErro === 'SEFAZ_UPSTREAM_URL_MISSING' || mensagemErro.includes('SEFAZ_UPSTREAM_URL')) {
-                return {
-                    erro:
-                        'endpoint não configurado na Vercel (configure SEFAZ_PROVIDER=qive e, se quiser, SEFAZ_UPSTREAM_URL ou QIVE_BASE_URL em Project Settings > Environment Variables)'
-                };
-            }
-
-            return { erro: `SEFAZ ${response.status}: ${mensagemErro}` };
-        }
-
-        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-        let xmlConteudo = '';
-
-        if (contentType.includes('application/json')) {
-            const payload = await response.json();
-            xmlConteudo = String(
-                payload?.xml ||
-                payload?.xmlContent ||
-                payload?.xml_conteudo ||
-                payload?.conteudoXml ||
-                payload?.content ||
-                ''
-            );
-        } else {
-            xmlConteudo = await response.text();
-        }
-
-        if (!xmlConteudo || !xmlConteudo.trim()) {
-            return { erro: 'SEFAZ não retornou XML' };
-        }
-
-        const dadosNF = mapXmlConteudoParaDadosNF(xmlConteudo, numeroNF, 'sefaz');
-        if (!dadosNF || !dadosNF.encontrada) {
-            return { erro: 'SEFAZ retornou XML, mas não foi possível extrair os dados da NF' };
-        }
-
-        return {
-            encontrada: true,
-            dadosNF,
-            xmlConteudo,
-            nomeArquivo: `NF_${dadosNF.numeroNF || numeroNF || Date.now()}.xml`,
-        };
-    } catch (error) {
-        return { erro: error?.message || String(error) };
-    }
-}
-
 async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
     const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
     const resultado = {
@@ -1622,28 +1460,43 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
         origem: '',
     };
 
-    // Fluxo único: consulta XML direto na SEFAZ (via proxy configurado).
-    const sefaz = await consultarXmlNaSefaz(codigoBarrasOriginal || numeroNormalizado, numeroNormalizado);
-    if (sefaz && sefaz.encontrada && sefaz.dadosNF) {
-        resultado.fontes.push('SEFAZ: encontrada');
+    const local = buscarNotaPorCodigo(numeroNormalizado || codigoBarrasOriginal);
+    if (local && local.nota) {
+        resultado.fontes.push('Cache local: encontrada');
         resultado.encontrada = true;
-        resultado.origem = 'sefaz';
-        resultado.dadosNF = sefaz.dadosNF;
-        resultado.xmlConteudo = sefaz.xmlConteudo || '';
-        resultado.nomeArquivo = sefaz.nomeArquivo || '';
+        resultado.origem = 'cache-local';
+        resultado.dadosNF = {
+            encontrada: true,
+            numeroNF: local.nota.numero,
+            cliente: local.nota.cliente,
+            transportadora: local.nota.transportadora,
+            produtoNome: local.nota.artigo,
+            artigo: local.nota.artigo,
+            pedido: local.nota.pedido,
+            quantidadeItens: local.nota.quantidadeItens,
+            metros: local.nota.metros,
+            pesoBruto: local.nota.pesoBruto,
+            valorTotal: local.nota.valor,
+            dataEmissao: local.nota.dataEmissao,
+            origemXml: local.nota.origemXml || '',
+        };
         return resultado;
     }
-    if (sefaz && sefaz.erro) {
-        resultado.fontes.push(`SEFAZ: ${sefaz.erro}`);
-    } else {
-        resultado.fontes.push('SEFAZ: nao encontrada');
+    resultado.fontes.push('Cache local: nao encontrada');
+
+    const supabase = await buscarDadosNFNoSupabase(numeroNormalizado || codigoBarrasOriginal);
+    if (supabase && supabase.encontrada) {
+        resultado.fontes.push('Supabase/XML da pasta: encontrada');
+        resultado.encontrada = true;
+        resultado.origem = 'supabase';
+        resultado.dadosNF = supabase;
+        return resultado;
     }
 
-    if (codigoBarrasOriginal) {
-        const chaveLida = String(codigoBarrasOriginal || '').replace(/\D/g, '');
-        if (chaveLida.length === 44) {
-            resultado.fontes.push(`Chave lida: ${chaveLida}`);
-        }
+    if (supabase && supabase.erroConexao) {
+        resultado.fontes.push('Supabase/XML da pasta: falha de conexao');
+    } else {
+        resultado.fontes.push('Supabase/XML da pasta: nao encontrada');
     }
 
     return resultado;
@@ -2649,6 +2502,10 @@ function renderizarDashboard() {
 // ========================================
 
 function renderizarAdminPanel() {
+    const abaAtiva = ['solicitacoes', 'notas', 'relatorios'].includes(String(appState.adminActiveTab || ''))
+        ? appState.adminActiveTab
+        : 'solicitacoes';
+
     return `
         <div class="dashboard-container">
             <div class="dashboard-content">
@@ -2668,26 +2525,26 @@ function renderizarAdminPanel() {
                 </div>
 
                 <div class="tabs">
-                    <button class="tab-button active" onclick="abrirAba('solicitacoes')">
+                    <button class="tab-button ${abaAtiva === 'solicitacoes' ? 'active' : ''}" onclick="abrirAba('solicitacoes')">
                         👥 Solicitações
                     </button>
-                    <button class="tab-button" onclick="abrirAba('notas')">
+                    <button class="tab-button ${abaAtiva === 'notas' ? 'active' : ''}" onclick="abrirAba('notas')">
                         📄 Notas Fiscais
                     </button>
-                    <button class="tab-button" onclick="abrirAba('relatorios')">
+                    <button class="tab-button ${abaAtiva === 'relatorios' ? 'active' : ''}" onclick="abrirAba('relatorios')">
                         📊 Relatórios
                     </button>
                 </div>
 
-                <div id="solicitacoes" class="tab-content active">
+                <div id="solicitacoes" class="tab-content ${abaAtiva === 'solicitacoes' ? 'active' : ''}">
                     ${renderizarSolicitacoes()}
                 </div>
 
-                <div id="notas" class="tab-content">
+                <div id="notas" class="tab-content ${abaAtiva === 'notas' ? 'active' : ''}">
                     ${renderizarNotasFiscaisAdmin()}
                 </div>
 
-                <div id="relatorios" class="tab-content">
+                <div id="relatorios" class="tab-content ${abaAtiva === 'relatorios' ? 'active' : ''}">
                     ${renderizarRelatorios()}
                 </div>
             </div>
@@ -3118,7 +2975,7 @@ async function gerarPlanilhaFaturistaExcel() {
         alert(
             `⚠️ Atenção: ${nfsSemXml.length} NF(s) deste filtro ainda não possuem origem XML vinculada.\n` +
             `NFs: ${preview}${sufixo}.\n\n` +
-            'A planilha será gerada mesmo assim. Você pode seguir e realizar nova consulta direta na SEFAZ quando necessário.'
+            'A planilha será gerada mesmo assim. Assim que o importador ler os XMLs da pasta, os dados serão completados automaticamente.'
         );
     }
 
@@ -3506,7 +3363,7 @@ async function handleBiparFaturamento() {
             `${resumoFontes}\n\n` +
             'Verifique:\n' +
             '• Se a chave da NF está correta (44 dígitos)\n' +
-            '• Se o endpoint SEFAZ está configurado e ativo no ambiente publicado'
+            '• Se o XML já foi importado da pasta para o Supabase'
         );
         return;
     }
@@ -3537,7 +3394,7 @@ async function handleBiparFaturamento() {
         ].filter(Boolean).join('\n');
         const continuar = confirm(
             `⚠️ NF ${numeroExtraido} encontrada, mas com dados incompletos:\n${motivos}\n\n` +
-            'O retorno da SEFAZ veio incompleto para esta consulta.\n\n' +
+            'Os dados importados do XML estão incompletos para esta NF.\n\n' +
             'Deseja prosseguir mesmo assim?'
         );
         if (!continuar) return;
@@ -3553,16 +3410,8 @@ async function handleBiparFaturamento() {
     if (biparNota(numeroExtraido, dataHora, usarDataManual, 'faturamento')) {
         await sincronizarNfSupabase(nota).catch(() => null);
 
-        // Download automático do XML da NF ao bipar.
-        // Prioriza XML retornado pela SEFAZ; fallback para conteúdo salvo no Supabase.
-        if (diagnostico.xmlConteudo) {
-            salvarXmlComoDownload(
-                diagnostico.xmlConteudo,
-                diagnostico.nomeArquivo || `NF_${numeroExtraido}.xml`
-            );
-        } else {
-            void baixarXmlDaNF(numeroExtraido);
-        }
+        // Download automático do XML salvo no Supabase (importado da pasta local).
+        void baixarXmlDaNF(numeroExtraido);
 
         appState.ultimaBipagemFaturista = {
             numero: nota.numero,
@@ -3732,15 +3581,11 @@ async function handleBiparExpedicao() {
 // ========================================
 
 function abrirAba(nomeAba) {
-    document.querySelectorAll('.tab-content').forEach(tab => {
-        tab.classList.remove('active');
-    });
-    document.querySelectorAll('.tab-button').forEach(btn => {
-        btn.classList.remove('active');
-    });
+    const abasValidas = ['solicitacoes', 'notas', 'relatorios'];
+    if (!abasValidas.includes(nomeAba)) return;
 
-    document.getElementById(nomeAba).classList.add('active');
-    event.target.classList.add('active');
+    appState.adminActiveTab = nomeAba;
+    renderizar();
 }
 
 // ========================================

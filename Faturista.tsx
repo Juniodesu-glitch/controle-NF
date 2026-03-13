@@ -43,9 +43,9 @@ export default function Faturista() {
       setCodigoBarras("");
       toast.success("Nota fiscal faturada com sucesso!");
       if (resultado?.xmlSalvo) {
-        toast.success(`XML SEFAZ salvo: ${resultado.xmlArquivo || "OK"}`);
+        toast.success(`XML processado: ${resultado.xmlArquivo || "OK"}`);
       } else {
-        toast.warning(resultado?.xmlMotivo || "Não foi possível baixar XML da SEFAZ");
+        toast.info(resultado?.xmlMotivo || "XML será lido apenas da pasta configurada");
       }
       listarBipagens.refetch();
       
@@ -168,6 +168,7 @@ export default function Faturista() {
                 <div className="space-y-1 text-sm text-foreground">
                   <p><strong>NF:</strong> {ultimaBipagem.notaFiscal.numero}</p>
                   <p><strong>Cliente:</strong> {ultimaBipagem.notaFiscal.cliente}</p>
+                  <p><strong>Produto:</strong> {ultimaBipagem.notaFiscal.artigo || ultimaBipagem.notaFiscal.produtoNome || "Não informado"}</p>
                   <p><strong>Valor:</strong> R$ {ultimaBipagem.notaFiscal.valor}</p>
                   <p><strong>Horário:</strong> {new Date().toLocaleTimeString("pt-BR")}</p>
                 </div>
@@ -178,8 +179,8 @@ export default function Faturista() {
                 }`}>
                   <FileDown size={16} />
                   {ultimaBipagem.xmlSalvo
-                    ? `XML SEFAZ salvo: ${ultimaBipagem.xmlArquivo || "OK"}`
-                    : `XML SEFAZ: ${ultimaBipagem.xmlMotivo || "não disponível"}`}
+                    ? `XML processado: ${ultimaBipagem.xmlArquivo || "OK"}`
+                    : `XML: ${ultimaBipagem.xmlMotivo || "não disponível"}`}
                 </div>
               </div>
             </div>
@@ -195,6 +196,9 @@ export default function Faturista() {
                 <div key={idx} className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg border border-border">
                   <div className="text-sm">
                     <p className="font-medium text-foreground">NF #{bipagem.notaFiscalId}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Produto: {bipagem.notaFiscal?.artigo || bipagem.notaFiscal?.produtoNome || "Não informado"}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {new Date(bipagem.criadoEm).toLocaleString("pt-BR")}
                     </p>

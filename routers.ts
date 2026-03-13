@@ -5,8 +5,6 @@ import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import * as db from "./db";
-import fs from "fs";
-import path from "path";
 
 // Helper para verificar se é admin
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -18,13 +16,6 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
 
 function normalizarCodigo(valor: string): string {
   return String(valor || "").trim().replace(/\s+/g, "");
-}
-
-function extrairChaveAcesso(codigoLido: string): string {
-  const digits = normalizarCodigo(codigoLido).replace(/\D/g, "");
-  if (digits.length === 44) return digits;
-  const match = digits.match(/\d{44}/);
-  return match ? match[0] : "";
 }
 
 function extrairNumeroNF(codigoLido: string): string {
@@ -44,126 +35,6 @@ function extrairNumeroNF(codigoLido: string): string {
   }
 
   return digits || valor;
-}
-
-function extrairXmlDaResposta(payload: unknown): string {
-  if (!payload) return "";
-  if (typeof payload === "string") return payload;
-  if (typeof payload !== "object") return "";
-
-  const data = payload as Record<string, unknown>;
-  const candidates = [
-    "xml",
-    "xmlContent",
-    "xml_conteudo",
-    "conteudoXml",
-    "conteudo_xml",
-    "content",
-  ];
-
-  for (const key of candidates) {
-    const value = data[key];
-    if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-  }
-  return "";
-}
-
-async function baixarXmlSefazParaPasta(codigoBipado: string): Promise<{
-  salvo: boolean;
-  arquivo?: string;
-  motivo?: string;
-}> {
-  try {
-    const { loadSettings, expandPath } = await import("./settings");
-    const settings = loadSettings();
-    if (!settings.nfSourcePath) {
-      return { salvo: false, motivo: "Pasta de XML não configurada" };
-    }
-
-    const pastaDestino = expandPath(settings.nfSourcePath);
-    if (!fs.existsSync(pastaDestino)) {
-      return { salvo: false, motivo: "Pasta configurada não existe" };
-    }
-
-    const sefazUrl = String(
-      process.env.SEFAZ_XML_API_URL || "http://127.0.0.1:8790/sefaz/xml"
-    ).trim();
-    const chaveAcesso = extrairChaveAcesso(codigoBipado);
-    const numeroNF = extrairNumeroNF(codigoBipado);
-    const codigo = normalizarCodigo(codigoBipado);
-
-    const method = String(process.env.SEFAZ_XML_API_METHOD || "POST").toUpperCase();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/xml, application/xml, text/plain",
-    };
-
-    const token = String(process.env.SEFAZ_XML_API_TOKEN || "").trim();
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-
-    const proxyApiKey = String(process.env.SEFAZ_PROXY_API_KEY || "").trim();
-    if (proxyApiKey) {
-      headers["X-Api-Key"] = proxyApiKey;
-    }
-
-    let response: Response;
-    if (method === "GET") {
-      const query = new URLSearchParams();
-      query.set("codigo", codigo);
-      if (chaveAcesso) query.set("chave", chaveAcesso);
-      if (numeroNF) query.set("numeroNF", numeroNF);
-      response = await fetch(`${sefazUrl}?${query.toString()}`, { headers });
-    } else {
-      response = await fetch(sefazUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          codigo,
-          chaveAcesso,
-          numeroNF,
-        }),
-      });
-    }
-
-    if (!response.ok) {
-      const erro = await response.text();
-      return {
-        salvo: false,
-        motivo: `Falha SEFAZ ${response.status}: ${erro || "sem detalhes"}`,
-      };
-    }
-
-    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    let xml = "";
-
-    if (contentType.includes("application/json")) {
-      const payload = await response.json();
-      xml = extrairXmlDaResposta(payload);
-    } else {
-      const text = await response.text();
-      xml = text || "";
-    }
-
-    if (!xml.trim()) {
-      return { salvo: false, motivo: "SEFAZ não retornou XML para esta NF" };
-    }
-
-    const baseName = chaveAcesso || numeroNF || String(Date.now());
-    const nomeArquivo = `NF_${baseName}.xml`;
-    const destino = path.join(pastaDestino, nomeArquivo);
-    fs.writeFileSync(destino, xml, "utf-8");
-
-    return { salvo: true, arquivo: nomeArquivo };
-  } catch (error) {
-    return {
-      salvo: false,
-      motivo: `Erro ao baixar XML da SEFAZ: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
 }
 
 export const appRouter = router({
@@ -290,15 +161,12 @@ export const appRouter = router({
         // Atualizar status da NF
         await db.updateNotaFiscalStatus(notaFiscal.id, "faturada");
 
-        // Busca XML na SEFAZ (via endpoint configurado) e salva na pasta de NFs.
-        const xml = await baixarXmlSefazParaPasta(input.numeroNF);
-
         return {
           success: true,
           notaFiscal,
-          xmlSalvo: xml.salvo,
-          xmlArquivo: xml.arquivo,
-          xmlMotivo: xml.motivo,
+          xmlSalvo: false,
+          xmlArquivo: "",
+          xmlMotivo: "XML será processado somente pelo importador da pasta configurada",
         };
       }),
 

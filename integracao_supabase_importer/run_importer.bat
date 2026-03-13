@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if "%NF_SOURCE_DIR%"=="" set "NF_SOURCE_DIR=C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app"
+if "%NF_SOURCE_DIR%"=="" set "NF_SOURCE_DIR=C:\Users\junio.gomes\OneDrive - Capricórnio Têxtil S.A\nf--app2.0"
 set "RUN_ONCE=0"
 set "FORCE_REIMPORT_ALL=0"
 set "IMPORTER_FORCE_CONTINUOUS=1"

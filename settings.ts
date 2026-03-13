@@ -7,14 +7,14 @@ const SETTINGS_FILE = path.join(process.cwd(), 'app-settings.json');
 
 export interface AppSettings {
   nfSourcePath: string;
-  nfSourceType: 'local' | 'network' | 'onedrive-pattern';
+  sourceType: 'local' | 'network' | 'onedrive-pattern';
   lastUpdated: string;
   updatedBy?: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  nfSourcePath: '',
-  nfSourceType: 'local',
+  nfSourcePath: 'C:\\Users\\junio.gomes\\OneDrive - Capricórnio Têxtil S.A\\nf--app2.0',
+  sourceType: 'local',
   lastUpdated: new Date().toISOString(),
 };
 
@@ -25,7 +25,14 @@ export function loadSettings(): AppSettings {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const data = fs.readFileSync(SETTINGS_FILE, 'utf-8');
-      return JSON.parse(data) as AppSettings;
+      const parsed = JSON.parse(data) as Partial<AppSettings> & { nfSourceType?: AppSettings['sourceType'] };
+
+      return {
+        nfSourcePath: String(parsed.nfSourcePath || DEFAULT_SETTINGS.nfSourcePath),
+        sourceType: (parsed.sourceType || parsed.nfSourceType || DEFAULT_SETTINGS.sourceType),
+        lastUpdated: String(parsed.lastUpdated || DEFAULT_SETTINGS.lastUpdated),
+        updatedBy: parsed.updatedBy,
+      };
     }
   } catch (error) {
     console.error('Erro ao carregar configurações:', error);

@@ -4,7 +4,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
 if ([string]::IsNullOrWhiteSpace($env:NF_SOURCE_DIR)) {
-    $env:NF_SOURCE_DIR = 'C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app'
+    $env:NF_SOURCE_DIR = 'C:\Users\junio.gomes\OneDrive - Capricórnio Têxtil S.A\nf--app2.0'
 }
 
 # Evita herdar variaveis globais de execucao unica no Windows.
