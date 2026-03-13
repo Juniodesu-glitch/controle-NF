@@ -54,7 +54,7 @@ const runtimeConfig = (typeof window !== 'undefined' && window.__APP_CONFIG__) ?
 
 const supabaseConfig = {
     url: runtimeConfig.supabaseUrl || 'https://ttxobirrlaetnnnpalfk.supabase.co',
-    key: runtimeConfig.supabaseAnonKey || 'sb_publishable_GVL27-8GCdfuBmm83HveYA_eaiRBLgp',
+    key: runtimeConfig.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0eG9iaXJybGFldG5ubnBhbGZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MzU2NTgsImV4cCI6MjA4ODUxMTY1OH0.rTV9nr9orMDd9HOZ9SycDPt9i4gYE_NGUEsLwuz7SYU',
     tables: {
         perfis: 'profiles',
         solicitacoes: 'solicitacoes_acesso',
