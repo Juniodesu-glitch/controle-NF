@@ -4,34 +4,28 @@ import xml.etree.ElementTree as ET
 from supabase import create_client, Client
 
 # Configurações
-SHAREPOINT_FOLDER_URL = 'https://capricornio.sharepoint.com/:f:/s/LOGISTICA-SERVIDORDEARQUIVOS/IgAjlvDEh662Qr-uUwy4qMU-AVKObDAP3p3uxVOiVpLOIUo?e=OeIPoo'  # Link compartilhado da pasta
+LOCAL_XML_FOLDER = r'C:\Users\junio.gomes\Capricórnio Têxtil S.A\LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos\nf-app'
 SUPABASE_URL = 'https://ttxobirrlaetnnnpalfk.supabase.co'
 SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0eG9iaXJybGFldG5ubnBhbGZrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjkzNTY1OCwiZXhwIjoyMDg4NTExNjU4fQ.SvOxfGJcS1kaSlPwQKHhY7waZ4rXfnXdxJlpBTDQTXI'
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def get_sharepoint_xml_files(folder_url):
-    print(f"[INFO] Buscando arquivos XML na pasta: {folder_url}")
-    response = requests.get(folder_url)
-    response.raise_for_status()
-    xml_links = []
-    for line in response.text.splitlines():
-        if '.xml' in line and 'href' in line:
-            start = line.find('href="') + 6
-            end = line.find('.xml', start) + 4
-            link = line[start:end]
-            if link.startswith('http'):
-                xml_links.append(link)
-    print(f"[INFO] {len(xml_links)} arquivos XML encontrados.")
-    for l in xml_links:
-        print(f"[XML] {l}")
-    return xml_links
+def get_local_xml_files(folder_path):
+    print(f"[INFO] Buscando arquivos XML na pasta local: {folder_path}")
+    xml_files = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.lower().endswith('.xml'):
+                xml_files.append(os.path.join(root, file))
+    print(f"[INFO] {len(xml_files)} arquivos XML encontrados.")
+    for f in xml_files:
+        print(f"[XML] {f}")
+    return xml_files
 
-def download_xml_file(xml_url):
-    print(f"[INFO] Baixando XML: {xml_url}")
-    response = requests.get(xml_url)
-    response.raise_for_status()
-    return response.content
+def read_xml_file(xml_path):
+    print(f"[INFO] Lendo XML: {xml_path}")
+    with open(xml_path, 'r', encoding='utf-8') as f:
+        return f.read()
 
 def parse_xml(xml_content):
     root = ET.fromstring(xml_content)
@@ -44,16 +38,16 @@ def insert_nf_to_supabase(data):
     supabase.table("nfs").insert(data).execute()
 
 def main():
-    xml_links = get_sharepoint_xml_files(SHAREPOINT_FOLDER_URL)
-    if not xml_links:
-        print("[WARN] Nenhum arquivo XML encontrado na pasta do SharePoint.")
-    for xml_url in xml_links:
+    xml_files = get_local_xml_files(LOCAL_XML_FOLDER)
+    if not xml_files:
+        print("[WARN] Nenhum arquivo XML encontrado na pasta local.")
+    for xml_path in xml_files:
         try:
-            xml_content = download_xml_file(xml_url)
+            xml_content = read_xml_file(xml_path)
             data = parse_xml(xml_content)
             insert_nf_to_supabase(data)
         except Exception as e:
-            print(f"[ERRO] Falha ao processar {xml_url}: {e}")
+            print(f"[ERRO] Falha ao processar {xml_path}: {e}")
 
 if __name__ == "__main__":
     main()
