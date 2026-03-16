@@ -88,35 +88,43 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
     digits = re.sub(r'\D', '', codigo_barras)
     chave_acesso = None
     numero_nf = None
+    # Extrai a chave de acesso (44 dígitos)
     if len(digits) == 44:
         chave_acesso = digits
     else:
         match = re.search(r'(\d{44})', digits)
         if match:
             chave_acesso = match.group(1)
-    match_nf = re.search(r'(\d{6,9})', digits)
-    if match_nf:
-        numero_nf = match_nf.group(1)
-    if not chave_acesso:
-        print("[ERRO] Não foi possível extrair a chave de acesso do código de barras!")
+    # Extrai o número da NF (6 dígitos) da posição padrão (posição 26 a 31, 0-based)
+    if len(digits) >= 34:
+        numero_nf = digits[25:31]
+        print(f"[INFO] Número da NF extraído pela posição padrão: {numero_nf}")
+    else:
+        # fallback: busca qualquer sequência de 6 dígitos
+        match_nf = re.search(r'(\d{6})', digits)
+        if match_nf:
+            numero_nf = match_nf.group(1)
+            print(f"[INFO] Número da NF extraído por regex: {numero_nf}")
+    if not numero_nf:
+        print("[ERRO] Não foi possível extrair o número da NF do código de barras!")
         print("========== FIM ==========")
         return
-    print(f"[INFO] Chave de acesso extraída: {chave_acesso}")
-    print(f"[INFO] Número da NF extraído: {numero_nf if numero_nf else 'Não encontrado no código de barras'}")
+    print(f"[INFO] Chave de acesso extraída: {chave_acesso if chave_acesso else 'Não encontrada'}")
+    print(f"[INFO] Número da NF extraído: {numero_nf}")
     xml_files = get_local_xml_files(LOCAL_XML_FOLDER)
     encontrou = False
     for xml_path in xml_files:
         try:
             print(f"[LOG] Verificando arquivo: {xml_path}")
             xml_content = read_xml_file(xml_path)
-            encontrou_chave = chave_acesso in xml_content
-            encontrou_nf = numero_nf and numero_nf in xml_content
-            if encontrou_chave or encontrou_nf:
+            encontrou_nf = numero_nf in xml_content
+            encontrou_chave = chave_acesso and chave_acesso in xml_content
+            if encontrou_nf or encontrou_chave:
                 print(f"[SUCESSO] Encontrou XML correspondente: {xml_path}")
                 data = parse_xml(xml_content)
-                if not data.get("numero_nf") and numero_nf:
-                    data["numero_nf"] = numero_nf
-                if not data.get("chave_acesso"):
+                # Garante que numero_nf esteja sempre preenchido
+                data["numero_nf"] = numero_nf
+                if chave_acesso:
                     data["chave_acesso"] = chave_acesso
                 insert_nf_to_supabase(data)
                 print(f"[OK] NF enviada ao Supabase: {data}")
@@ -125,7 +133,7 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
         except Exception as e:
             print(f"[ERRO] Falha ao processar {xml_path}: {e}")
     if not encontrou:
-        print(f"[ERRO] Não foi encontrado XML correspondente para chave {chave_acesso} ou NF {numero_nf} na pasta!")
+        print(f"[ERRO] Não foi encontrado XML correspondente para NF {numero_nf} ou chave {chave_acesso} na pasta!")
     print("========== FIM ==========")
 
 if __name__ == "__main__":
