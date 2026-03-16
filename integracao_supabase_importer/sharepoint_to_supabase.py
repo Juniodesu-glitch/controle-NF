@@ -98,7 +98,17 @@ def main():
                 if chave in xml_content:
                     print(f"[INFO] Encontrou XML para chave {chave}: {xml_path}")
                     data = parse_xml(xml_content)
+                    # Garante que numero_nf será preenchido
+                    if not data.get("numero_nf"):
+                        # Tenta extrair o número da NF do nome do arquivo, se possível
+                        match = re.search(r'(\d{6,9})', os.path.basename(xml_path))
+                        if match:
+                            data["numero_nf"] = match.group(1)
+                            print(f"[INFO] numero_nf extraído do nome do arquivo: {data['numero_nf']}")
+                        else:
+                            print("[WARN] Não foi possível extrair numero_nf do XML.")
                     update_nf_by_chave(chave, data)
+                    print(f"[OK] Registro atualizado no Supabase para chave {chave} com dados: {data}")
                     encontrou = True
                     break
             except Exception as e:
