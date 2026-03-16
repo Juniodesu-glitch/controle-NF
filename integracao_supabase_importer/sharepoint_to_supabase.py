@@ -108,7 +108,10 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
     for xml_path in xml_files:
         try:
             xml_content = read_xml_file(xml_path)
-            if chave_acesso in xml_content or (numero_nf and numero_nf in xml_content):
+            # Busca por chave de acesso ou número da NF dentro do conteúdo do XML
+            encontrou_chave = chave_acesso in xml_content
+            encontrou_nf = numero_nf and numero_nf in xml_content
+            if encontrou_chave or encontrou_nf:
                 print(f"[INFO] Encontrou XML para chave {chave_acesso} ou NF {numero_nf}: {xml_path}")
                 data = parse_xml(xml_content)
                 # Garante que numero_nf e chave_acesso estejam preenchidos
@@ -120,6 +123,8 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
                 print(f"[OK] NF enviada ao Supabase: {data}")
                 encontrou = True
                 break
+            else:
+                print(f"[DEBUG] Não encontrou chave {chave_acesso} nem NF {numero_nf} em {xml_path}")
         except Exception as e:
             print(f"[ERRO] Falha ao processar {xml_path}: {e}")
     if not encontrou:
