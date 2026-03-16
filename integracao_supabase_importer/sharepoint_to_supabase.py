@@ -4,9 +4,9 @@ import xml.etree.ElementTree as ET
 from supabase import create_client, Client
 
 # Configurações
-SHAREPOINT_FOLDER_URL = os.getenv('SHAREPOINT_FOLDER_URL')  # Link compartilhado da pasta
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+SHAREPOINT_FOLDER_URL = 'https://ttxobirrlaetnnnpalfk.supabase.co'  # Link compartilhado da pasta
+SUPABASE_URL = 'https://ttxobirrlaetnnnpalfk.supabase.co'
+SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0eG9iaXJybGFldG5ubnBhbGZrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjkzNTY1OCwiZXhwIjoyMDg4NTExNjU4fQ.SvOxfGJcS1kaSlPwQKHhY7waZ4rXfnXdxJlpBTDQTXI'
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
