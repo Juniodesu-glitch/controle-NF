@@ -42,7 +42,8 @@ def parse_xml(xml_content):
     # CNPJ e valor não são extraídos desse XML DANFE
     cnpj = None
     valor = None
-    return {"numero_nf": numero_nf, "cnpj": cnpj, "valor": valor}
+    # O campo do Supabase deve ser exatamente 'numero_nf'
+    return {"numero_nf": numero_nf}
 
 def insert_nf_to_supabase(data):
     print(f"[INFO] Inserindo no Supabase: {data}")
