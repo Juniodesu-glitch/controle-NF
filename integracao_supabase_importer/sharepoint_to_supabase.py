@@ -1,5 +1,5 @@
 import os
-import requests
+import re
 import xml.etree.ElementTree as ET
 from supabase import create_client, Client
 
@@ -11,34 +11,33 @@ SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_local_xml_files(folder_path):
-    print(f"[INFO] Buscando arquivos XML na pasta local: {folder_path}")
     xml_files = []
     for root, dirs, files in os.walk(folder_path):
         for file in files:
             if file.lower().endswith('.xml'):
                 xml_files.append(os.path.join(root, file))
-    print(f"[INFO] {len(xml_files)} arquivos XML encontrados.")
-    for f in xml_files:
-        print(f"[XML] {f}")
     return xml_files
 
 def read_xml_file(xml_path):
-    print(f"[INFO] Lendo XML: {xml_path}")
     with open(xml_path, 'r', encoding='utf-8') as f:
         return f.read()
 
 def parse_xml(xml_content):
-    import re
     root = ET.fromstring(xml_content)
     numero_nf = None
     cliente = None
     valor = None
     peso = None
-    # Heurísticas para extração
+    chave_acesso = None
     valores = []
     pesos = []
     for elem in root.iter():
         if elem.tag.endswith('textContent') and elem.text:
+            # Chave de acesso: 44 dígitos
+            if not chave_acesso:
+                match = re.search(r'\b\d{44}\b', elem.text)
+                if match:
+                    chave_acesso = match.group(0)
             # Número da NF: 6 dígitos
             if not numero_nf:
                 match = re.search(r'\b\d{6}\b', elem.text)
@@ -64,8 +63,21 @@ def parse_xml(xml_content):
         "numero_nf": numero_nf,
         "cliente": cliente,
         "valor": valor,
-        "peso": peso
+        "peso": peso,
+        "chave_acesso": chave_acesso
     }
+def get_pending_chaves():
+    # Busca todas as chaves de acesso que ainda não têm dados completos
+    # Considera que existe a coluna 'chave_acesso' na tabela nfs
+    result = supabase.table("nfs").select("chave_acesso, numero_nf").execute()
+    chaves = []
+    for row in result.data:
+        if row.get("chave_acesso") and (not row.get("numero_nf") or row.get("numero_nf") == ""):
+            chaves.append(row["chave_acesso"])
+    return chaves
+def update_nf_by_chave(chave_acesso, data):
+    # Atualiza o registro da NF pela chave de acesso
+    supabase.table("nfs").update(data).eq("chave_acesso", chave_acesso).execute()
 
 def insert_nf_to_supabase(data):
     print(f"[INFO] Inserindo no Supabase: {data}")
@@ -75,13 +87,24 @@ def main():
     xml_files = get_local_xml_files(LOCAL_XML_FOLDER)
     if not xml_files:
         print("[WARN] Nenhum arquivo XML encontrado na pasta local.")
-    for xml_path in xml_files:
-        try:
-            xml_content = read_xml_file(xml_path)
-            data = parse_xml(xml_content)
-            insert_nf_to_supabase(data)
-        except Exception as e:
-            print(f"[ERRO] Falha ao processar {xml_path}: {e}")
+    # Busca chaves de acesso pendentes
+    chaves_pendentes = get_pending_chaves()
+    print(f"[INFO] Chaves de acesso pendentes: {chaves_pendentes}")
+    for chave in chaves_pendentes:
+        encontrou = False
+        for xml_path in xml_files:
+            try:
+                xml_content = read_xml_file(xml_path)
+                if chave in xml_content:
+                    print(f"[INFO] Encontrou XML para chave {chave}: {xml_path}")
+                    data = parse_xml(xml_content)
+                    update_nf_by_chave(chave, data)
+                    encontrou = True
+                    break
+            except Exception as e:
+                print(f"[ERRO] Falha ao processar {xml_path}: {e}")
+        if not encontrou:
+            print(f"[INFO] Chave {chave} ainda não tem XML correspondente. Aguardando...")
 
 if __name__ == "__main__":
     main()
