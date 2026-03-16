@@ -81,7 +81,11 @@ def update_nf_by_chave(chave_acesso, data):
 
 def insert_nf_to_supabase(data):
     print(f"[INFO] Inserindo no Supabase: {data}")
-    supabase.table("nfs").insert(data).execute()
+    try:
+        result = supabase.table("nfs").insert(data).execute()
+        print(f"[SUPABASE] Resultado do insert: {result}")
+    except Exception as e:
+        print(f"[ERRO] Falha ao inserir no Supabase: {e}")
 
 def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
     print("\n========== INÍCIO DO PROCESSO ==========")
@@ -123,8 +127,8 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
                 data["numero_nf"] = numero_nf
                 if chave_acesso:
                     data["chave_acesso"] = chave_acesso
+                print(f"[DEBUG] Dados que serão enviados ao Supabase: {data}")
                 insert_nf_to_supabase(data)
-                print(f"[OK] NF enviada ao Supabase: {data}")
                 encontrou = True
                 break
             elif chave_acesso and chave_acesso in xml_content:
@@ -132,10 +136,12 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
                 data = parse_xml(xml_content)
                 data["numero_nf"] = numero_nf
                 data["chave_acesso"] = chave_acesso
+                print(f"[DEBUG] Dados que serão enviados ao Supabase: {data}")
                 insert_nf_to_supabase(data)
-                print(f"[OK] NF enviada ao Supabase: {data}")
                 encontrou = True
                 break
+            else:
+                print(f"[DEBUG] Não encontrou o número da NF nem a chave de acesso neste arquivo.")
         except Exception as e:
             print(f"[ERRO] Falha ao processar {xml_path}: {e}")
     if not encontrou:
