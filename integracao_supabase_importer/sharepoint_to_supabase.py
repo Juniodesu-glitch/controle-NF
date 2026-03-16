@@ -28,10 +28,21 @@ def read_xml_file(xml_path):
         return f.read()
 
 def parse_xml(xml_content):
+    import re
     root = ET.fromstring(xml_content)
-    cnpj = root.find('.//CNPJ').text if root.find('.//CNPJ') is not None else None
-    valor = root.find('.//vNF').text if root.find('.//vNF') is not None else None
-    return {"cnpj": cnpj, "valor": valor}
+    numero_nf = None
+    # Busca todos os textContent
+    for elem in root.iter():
+        if elem.tag.endswith('textContent') and elem.text:
+            # Procura por número de 6 dígitos (ex: 401327)
+            match = re.search(r'\b\d{6}\b', elem.text)
+            if match:
+                numero_nf = match.group(0)
+                break
+    # CNPJ e valor não são extraídos desse XML DANFE
+    cnpj = None
+    valor = None
+    return {"numero_nf": numero_nf, "cnpj": cnpj, "valor": valor}
 
 def insert_nf_to_supabase(data):
     print(f"[INFO] Inserindo no Supabase: {data}")
