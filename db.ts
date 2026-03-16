@@ -1,3 +1,12 @@
+// Upsert da chave de acesso na tabela nfs
+export async function upsertChaveAcessoNFS(chave_acesso: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .insert(notasFiscais) // troque para 'nfs' se sua tabela for 'nfs'
+    .values({ chave_acesso })
+    .onDuplicateKeyUpdate({ set: { chave_acesso } });
+}
 import { eq, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users, notasFiscais, bipagensFaturamento, bipagensExpedicao, solicitacoesAcesso } from "../drizzle/schema";
