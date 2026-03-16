@@ -145,9 +145,30 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const numeroNFExtraido = extrairNumeroNF(input.numeroNF);
+        // Extrai a chave de acesso (44 dígitos) do código bipado
+        const digits = input.numeroNF.replace(/\D/g, "");
+        let chaveAcesso = null;
+        if (digits.length === 44) {
+          chaveAcesso = digits;
+        } else {
+          const chave = digits.match(/\d{44}/);
+          if (chave) chaveAcesso = chave[0];
+        }
+        // Upsert da chave de acesso na tabela nfs
+        if (chaveAcesso) {
+          await db.upsertChaveAcessoNFS(chaveAcesso);
+        }
+
         const notaFiscal = await db.getNotaFiscalByNumero(numeroNFExtraido || input.numeroNF);
         if (!notaFiscal) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Nota fiscal não encontrada" });
+          // Não lança erro, apenas retorna aguardando XML
+          return {
+            success: true,
+            notaFiscal: null,
+            xmlSalvo: false,
+            xmlArquivo: "",
+            xmlMotivo: "Nota fiscal não encontrada. Chave de acesso salva e aguardando integração do XML.",
+          };
         }
 
         // Registrar bipagem
