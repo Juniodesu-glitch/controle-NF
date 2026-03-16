@@ -1,0 +1,50 @@
+import os
+import requests
+import xml.etree.ElementTree as ET
+from supabase import create_client, Client
+
+# Configurações
+SHAREPOINT_FOLDER_URL = os.getenv('SHAREPOINT_FOLDER_URL')  # Link compartilhado da pasta
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def get_sharepoint_xml_files(folder_url):
+    # Obtém a página HTML da pasta compartilhada
+    response = requests.get(folder_url)
+    response.raise_for_status()
+    # Extrai links dos arquivos XML (simples, via busca por .xml)
+    xml_links = []
+    for line in response.text.splitlines():
+        if '.xml' in line and 'href' in line:
+            start = line.find('href="') + 6
+            end = line.find('.xml', start) + 4
+            link = line[start:end]
+            if link.startswith('http'):
+                xml_links.append(link)
+    return xml_links
+
+def download_xml_file(xml_url):
+    response = requests.get(xml_url)
+    response.raise_for_status()
+    return response.content
+
+def parse_xml(xml_content):
+    root = ET.fromstring(xml_content)
+    cnpj = root.find('.//CNPJ').text if root.find('.//CNPJ') is not None else None
+    valor = root.find('.//vNF').text if root.find('.//vNF') is not None else None
+    return {"cnpj": cnpj, "valor": valor}
+
+def insert_nf_to_supabase(data):
+    supabase.table("nfs").insert(data).execute()
+
+def main():
+    xml_links = get_sharepoint_xml_files(SHAREPOINT_FOLDER_URL)
+    for xml_url in xml_links:
+        xml_content = download_xml_file(xml_url)
+        data = parse_xml(xml_content)
+        insert_nf_to_supabase(data)
+
+if __name__ == "__main__":
+    main()
