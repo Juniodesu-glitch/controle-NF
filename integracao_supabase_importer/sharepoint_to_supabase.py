@@ -31,19 +31,41 @@ def parse_xml(xml_content):
     import re
     root = ET.fromstring(xml_content)
     numero_nf = None
-    # Busca todos os textContent
+    cliente = None
+    valor = None
+    peso = None
+    # Heurísticas para extração
+    valores = []
+    pesos = []
     for elem in root.iter():
         if elem.tag.endswith('textContent') and elem.text:
-            # Procura por número de 6 dígitos (ex: 401327)
-            match = re.search(r'\b\d{6}\b', elem.text)
-            if match:
-                numero_nf = match.group(0)
-                break
-    # CNPJ e valor não são extraídos desse XML DANFE
-    cnpj = None
-    valor = None
-    # O campo do Supabase deve ser exatamente 'numero_nf'
-    return {"numero_nf": numero_nf}
+            # Número da NF: 6 dígitos
+            if not numero_nf:
+                match = re.search(r'\b\d{6}\b', elem.text)
+                if match:
+                    numero_nf = match.group(0)
+            # Cliente: primeira string toda maiúscula (exceto DANFE, NF-e, etc)
+            if not cliente:
+                if elem.text.isupper() and len(elem.text) > 5 and 'DANFE' not in elem.text and 'NF' not in elem.text:
+                    cliente = elem.text.strip()
+            # Valor: maior número com vírgula
+            valor_match = re.findall(r'\d{1,3}(?:\.\d{3})*,\d{2}', elem.text)
+            for v in valor_match:
+                valores.append(float(v.replace('.', '').replace(',', '.')))
+            # Peso: maior número com ponto
+            peso_match = re.findall(r'\d{1,3}(?:\.\d{3})*\.\d{2}', elem.text)
+            for p in peso_match:
+                pesos.append(float(p.replace('.', '')))
+    if valores:
+        valor = max(valores)
+    if pesos:
+        peso = max(pesos)
+    return {
+        "numero_nf": numero_nf,
+        "cliente": cliente,
+        "valor": valor,
+        "peso": peso
+    }
 
 def insert_nf_to_supabase(data):
     print(f"[INFO] Inserindo no Supabase: {data}")
