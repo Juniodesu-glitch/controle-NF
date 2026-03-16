@@ -107,10 +107,14 @@ def localizar_e_subir_nf_por_codigo_barras(codigo_barras):
     encontrou = False
     for xml_path in xml_files:
         try:
+            print(f"[LOG] Verificando arquivo: {xml_path}")
             xml_content = read_xml_file(xml_path)
-            # Busca por chave de acesso ou número da NF dentro do conteúdo do XML
             encontrou_chave = chave_acesso in xml_content
             encontrou_nf = numero_nf and numero_nf in xml_content
+            if encontrou_chave:
+                print(f"[MATCH] Chave de acesso encontrada no conteúdo do XML!")
+            if encontrou_nf:
+                print(f"[MATCH] Número da NF encontrado no conteúdo do XML!")
             if encontrou_chave or encontrou_nf:
                 print(f"[INFO] Encontrou XML para chave {chave_acesso} ou NF {numero_nf}: {xml_path}")
                 data = parse_xml(xml_content)
