@@ -15,16 +15,37 @@ import xml2js from 'xml2js';
 
 async function buscarXMLPorCodigo(codigoBarras: string, pastaXML: string) {
   const numeroNF = codigoBarras.slice(25, 31); // Posição padrão
-  const arquivos = fs.readdirSync(pastaXML);
+  let arquivos;
+  try {
+    arquivos = fs.readdirSync(pastaXML);
+    console.log('[DEBUG] Arquivos encontrados na pasta:', arquivos);
+  } catch (e) {
+    console.error('[ERRO] Não foi possível ler a pasta:', pastaXML, e);
+    throw new Error('Não foi possível ler a pasta de XML. Verifique permissões e caminho.');
+  }
+  let encontrou = false;
   for (const arquivo of arquivos) {
     if (arquivo.endsWith('.xml')) {
       const xmlPath = path.join(pastaXML, arquivo);
-      const xmlContent = fs.readFileSync(xmlPath, 'utf-8');
+      let xmlContent = '';
+      try {
+        xmlContent = fs.readFileSync(xmlPath, 'utf-8');
+      } catch (e) {
+        console.error('[ERRO] Falha ao ler o arquivo:', xmlPath, e);
+        continue;
+      }
       if (xmlContent.includes(numeroNF)) {
+        console.log(`[SUCESSO] Encontrou o número da NF ${numeroNF} no arquivo: ${xmlPath}`);
         const dados = await xml2js.parseStringPromise(xmlContent);
+        encontrou = true;
         return { xmlPath, dados, numeroNF };
+      } else {
+        console.log(`[DEBUG] Não encontrou o número da NF ${numeroNF} no arquivo: ${xmlPath}`);
       }
     }
+  }
+  if (!encontrou) {
+    console.error(`[ERRO] Não foi encontrado XML correspondente para NF ${numeroNF} na pasta!`);
   }
   return null;
 }
