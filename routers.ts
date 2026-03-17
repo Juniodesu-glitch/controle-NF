@@ -18,6 +18,7 @@ async function buscarXMLPorCodigo(codigoBarras: string, pastaXML: string) {
   let arquivos;
   try {
     arquivos = fs.readdirSync(pastaXML);
+    console.log('[DEBUG] Caminho da pasta XML:', pastaXML);
     console.log('[DEBUG] Arquivos encontrados na pasta:', arquivos);
   } catch (e) {
     console.error('[ERRO] Não foi possível ler a pasta:', pastaXML, e);
@@ -26,7 +27,8 @@ async function buscarXMLPorCodigo(codigoBarras: string, pastaXML: string) {
   let encontrou = false;
   for (const arquivo of arquivos) {
     if (arquivo.endsWith('.xml')) {
-      const xmlPath = path.join(pastaXML, arquivo);
+      const xmlPath = path.resolve(pastaXML, arquivo);
+      console.log('[DEBUG] Lendo arquivo:', xmlPath);
       let xmlContent = '';
       try {
         xmlContent = fs.readFileSync(xmlPath, 'utf-8');
@@ -45,7 +47,7 @@ async function buscarXMLPorCodigo(codigoBarras: string, pastaXML: string) {
     }
   }
   if (!encontrou) {
-    console.error(`[ERRO] Não foi encontrado XML correspondente para NF ${numeroNF} na pasta!`);
+    console.error(`[ERRO] Não foi encontrado XML correspondente para NF ${numeroNF} na pasta: ${pastaXML}`);
   }
   return null;
 }
