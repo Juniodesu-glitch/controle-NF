@@ -1,3 +1,14 @@
+  testeXML: router({
+    listarArquivos: protectedProcedure.query(async () => {
+      const pastaXML = 'C:/Users/junio.gomes/Capricórnio Têxtil S.A/LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos/nf-app';
+      try {
+        const arquivos = fs.readdirSync(pastaXML);
+        return { arquivos };
+      } catch (e) {
+        return { erro: 'Não foi possível ler a pasta', detalhes: String(e) };
+      }
+    }),
+  }),
 import fs from 'fs';
 import path from 'path';
 import xml2js from 'xml2js';
