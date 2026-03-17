@@ -1,3 +1,22 @@
+import fs from 'fs';
+import path from 'path';
+import xml2js from 'xml2js';
+
+async function buscarXMLPorCodigo(codigoBarras: string, pastaXML: string) {
+  const numeroNF = codigoBarras.slice(25, 31); // Posição padrão
+  const arquivos = fs.readdirSync(pastaXML);
+  for (const arquivo of arquivos) {
+    if (arquivo.endsWith('.xml')) {
+      const xmlPath = path.join(pastaXML, arquivo);
+      const xmlContent = fs.readFileSync(xmlPath, 'utf-8');
+      if (xmlContent.includes(numeroNF)) {
+        const dados = await xml2js.parseStringPromise(xmlContent);
+        return { xmlPath, dados, numeroNF };
+      }
+    }
+  }
+  return null;
+}
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -309,30 +328,47 @@ export const appRouter = router({
         };
       }),
 
-    validateNfPath: adminProcedure
-      .input(z.object({ nfSourcePath: z.string() }))
-      .mutation(async ({ input }) => {
-        const { validatePath, expandPath } = await import("./settings");
-        const validation = validatePath(input.nfSourcePath);
+    bipar: protectedProcedure
+      .input(z.object({
+        numeroNF: z.string(),
+        dataHora: z.date(),
+        dataHoraManual: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const pastaXML = 'C:/Users/junio.gomes/Capricórnio Têxtil S.A/LOGISTICA - SERVIDOR DE ARQUIVOS - Documentos/nf-app';
+        const resultado = await buscarXMLPorCodigo(input.numeroNF, pastaXML);
+        if (!resultado) {
+          return {
+            success: false,
+            notaFiscal: null,
+            xmlSalvo: false,
+            xmlArquivo: '',
+            xmlMotivo: 'XML não encontrado na pasta local.',
+          };
+        }
+        const { xmlPath, dados, numeroNF } = resultado;
+        const chaveAcesso = input.numeroNF.replace(/\D/g, "").slice(0, 44);
+        const cliente = dados?.NFe?.infNFe?.[0]?.dest?.[0]?.xNome?.[0] || '';
+        const valor = dados?.NFe?.infNFe?.[0]?.total?.[0]?.ICMSTot?.[0]?.vNF?.[0] || '';
+        await db.upsertChaveAcessoNFS(chaveAcesso);
+        await db.createNotaFiscal({
+          chave_acesso: chaveAcesso,
+          numero_nf: numeroNF,
+          cliente,
+          valor,
+          xml_arquivo: xmlPath,
+        });
         return {
-          valid: validation.valid,
-          error: validation.error,
-          fileCount: validation.fileCount,
-          expandedPath: validation.valid ? expandPath(input.nfSourcePath) : "",
+          success: true,
+          notaFiscal: {
+            chave_acesso: chaveAcesso,
+            numero_nf: numeroNF,
+            cliente,
+            valor,
+            xml_arquivo: xmlPath,
+          },
+          xmlSalvo: true,
+          xmlArquivo: xmlPath,
+          xmlMotivo: 'XML encontrado e NF salva no banco.',
         };
       }),
-
-    getSettingsInfo: adminProcedure.query(async () => {
-      const { loadSettings } = await import("./settings");
-      const settings = loadSettings();
-      return {
-        nfSourcePath: settings.nfSourcePath,
-        sourceType: settings.sourceType,
-        lastUpdated: settings.lastUpdated,
-        updatedBy: settings.updatedBy,
-      };
-    }),
-  }),
-});
-
-export type AppRouter = typeof appRouter;
