@@ -25,20 +25,40 @@ async function buscarXMLPorCodigo(codigoBarras: string, pastaXML: string) {
     throw new Error('Não foi possível ler a pasta de XML. Verifique permissões e caminho.');
   }
   let encontrou = false;
+  const encodings = ['utf-8', 'latin1', 'utf16le'];
   for (const arquivo of arquivos) {
     if (arquivo.endsWith('.xml')) {
       const xmlPath = path.resolve(pastaXML, arquivo);
-      console.log('[DEBUG] Lendo arquivo:', xmlPath);
       let xmlContent = '';
-      try {
-        xmlContent = fs.readFileSync(xmlPath, 'utf-8');
-      } catch (e) {
-        console.error('[ERRO] Falha ao ler o arquivo:', xmlPath, e);
+      let encodingUsado = '';
+      let leu = false;
+      for (const enc of encodings) {
+        try {
+          xmlContent = fs.readFileSync(xmlPath, enc);
+          leu = true;
+          encodingUsado = enc;
+          break;
+        } catch (e) {
+          // tenta próximo encoding
+        }
+      }
+      if (!leu) {
+        console.error('[ERRO] Falha ao ler o arquivo com todos os encodings:', xmlPath);
         continue;
       }
+      console.log(`[DEBUG] Lendo arquivo: ${xmlPath} (encoding: ${encodingUsado})`);
+      // Busca o número da NF em todas as tags possíveis
       if (xmlContent.includes(numeroNF)) {
         console.log(`[SUCESSO] Encontrou o número da NF ${numeroNF} no arquivo: ${xmlPath}`);
         const dados = await xml2js.parseStringPromise(xmlContent);
+        // Busca em tags comuns
+        let achouTag = false;
+        if (xmlContent.includes('<nNF>') || xmlContent.includes('<nNF ')) {
+          achouTag = true;
+        }
+        if (!achouTag) {
+          console.warn(`[WARN] Número da NF encontrado como substring, mas não em <nNF>. Verifique o formato do XML.`);
+        }
         encontrou = true;
         return { xmlPath, dados, numeroNF };
       } else {
