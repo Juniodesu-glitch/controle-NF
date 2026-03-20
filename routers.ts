@@ -278,12 +278,43 @@ export const appRouter = router({
         dataHoraManual: z.boolean(),
       }))
       .mutation(async ({ input, ctx }) => {
-        const notaFiscal = await db.getNotaFiscalByNumero(input.numeroNF);
-        if (!notaFiscal) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Nota fiscal não encontrada" });
+        const numeroNFExtraido = extrairNumeroNF(input.numeroNF);
+        // Extrai a chave de acesso (44 dígitos) do código bipado
+        const digits = input.numeroNF.replace(/\D/g, "");
+        let chaveAcesso = null;
+        if (digits.length === 44) {
+          chaveAcesso = digits;
+        } else {
+          const chave = digits.match(/\d{44}/);
+          if (chave) chaveAcesso = chave[0];
         }
 
-        // Registrar bipagem
+        const notaFiscal = await db.getNotaFiscalByNumero(numeroNFExtraido || input.numeroNF);
+        
+        // Registrar bipagem detalhada do conferente
+        await db.createBipagemExpedicaoDetalhes({
+          codigoBipado: input.numeroNF,
+          numeroNF: numeroNFExtraido || input.numeroNF,
+          chaveAcesso: chaveAcesso,
+          pedido: notaFiscal?.pedido || null,
+          nomeCliente: notaFiscal?.cliente || null,
+          quantidadePecas: notaFiscal?.quantidadePecas || null,
+          transportadora: notaFiscal?.transportadora || null,
+          usuarioId: ctx.user.id,
+          dataHoraBipagem: input.dataHora,
+          dataHoraManual: input.dataHoraManual,
+        });
+
+        if (!notaFiscal) {
+          // Retorna erro mas ainda registra a bipagem para auditoria
+          return {
+            success: true,
+            notaFiscal: null,
+            mensagem: "Código bipado registrado. Nota fiscal não encontrada no banco.",
+          };
+        }
+
+        // Registrar bipagem tradicional
         await db.createBipagemExpedicao({
           notaFiscalId: notaFiscal.id,
           usuarioId: ctx.user.id,
@@ -294,11 +325,89 @@ export const appRouter = router({
         // Atualizar status da NF
         await db.updateNotaFiscalStatus(notaFiscal.id, "expedida");
 
-        return { success: true, notaFiscal };
+        return { 
+          success: true, 
+          notaFiscal,
+          numeroNF: numeroNFExtraido,
+          chaveAcesso: chaveAcesso,
+        };
+      }),
+
+    // Novo endpoint para bipagem com informações completas do conferente
+    biparComDetalhes: protectedProcedure
+      .input(z.object({
+        codigoBipado: z.string(),
+        numeroNF: z.string().optional(),
+        pedido: z.string().optional(),
+        nomeCliente: z.string().optional(),
+        quantidadePecas: z.number().optional(),
+        transportadora: z.string().optional(),
+        dataHora: z.date(),
+        dataHoraManual: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const numeroNFExtraido = extrairNumeroNF(input.codigoBipado);
+        // Extrai a chave de acesso (44 dígitos) do código bipado
+        const digits = input.codigoBipado.replace(/\D/g, "");
+        let chaveAcesso = null;
+        if (digits.length === 44) {
+          chaveAcesso = digits;
+        } else {
+          const chave = digits.match(/\d{44}/);
+          if (chave) chaveAcesso = chave[0];
+        }
+
+        // Registrar bipagem detalhada do conferente
+        await db.createBipagemExpedicaoDetalhes({
+          codigoBipado: input.codigoBipado,
+          numeroNF: input.numeroNF || numeroNFExtraido,
+          chaveAcesso: chaveAcesso,
+          pedido: input.pedido || null,
+          nomeCliente: input.nomeCliente || null,
+          quantidadePecas: input.quantidadePecas || null,
+          transportadora: input.transportadora || null,
+          usuarioId: ctx.user.id,
+          dataHoraBipagem: input.dataHora,
+          dataHoraManual: input.dataHoraManual,
+        });
+
+        // Tenta buscar ou criar nota fiscal com as informações fornecidas
+        let notaFiscal = null;
+        if (input.numeroNF) {
+          notaFiscal = await db.getNotaFiscalByNumero(input.numeroNF);
+          if (!notaFiscal && (input.pedido || input.nomeCliente)) {
+            // Criar nova NF se não existir e temos informações
+            await db.createNotaFiscal({
+              numero: input.numeroNF,
+              serie: "1",
+              cliente: input.nomeCliente || "Cliente não identificado",
+              valor: "0.00",
+              pedido: input.pedido || null,
+              quantidadePecas: input.quantidadePecas || null,
+              transportadora: input.transportadora || null,
+              chaveAcesso: chaveAcesso,
+              dataEmissao: new Date(),
+              status: "expedida",
+            });
+            notaFiscal = await db.getNotaFiscalByNumero(input.numeroNF);
+          }
+        }
+
+        return { 
+          success: true, 
+          notaFiscal,
+          numeroNF: input.numeroNF || numeroNFExtraido,
+          chaveAcesso: chaveAcesso,
+          mensagem: "Bipagem registrada com sucesso",
+        };
       }),
 
     listar: protectedProcedure.query(async () => {
       return await db.getBipagensExpedicao();
+    }),
+
+    listarDetalhes: protectedProcedure.query(async () => {
+      return await db.getBipagensExpedicaoDetalhes();
     }),
   }),
 

@@ -9,7 +9,7 @@ export async function upsertChaveAcessoNFS(chave_acesso: string) {
 }
 import { eq, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, notasFiscais, bipagensFaturamento, bipagensExpedicao, solicitacoesAcesso } from "../drizzle/schema";
+import { InsertUser, users, notasFiscais, bipagensFaturamento, bipagensExpedicao, solicitacoesAcesso, bipagensExpedicaoDetalhes } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -181,4 +181,31 @@ export async function updateSolicitacaoAcesso(id: number, status: "pendente" | "
     result,
     affectedRows,
   };
+}
+
+// Bipagens de Expedição Detalhes - Nova tabela para as bipagens do conferente
+export async function createBipagemExpedicaoDetalhes(data: any) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(bipagensExpedicaoDetalhes).values(data);
+  return result;
+}
+
+export async function getBipagensExpedicaoDetalhes() {
+  const db = await getDb();
+  if (!db) return [];
+  return await db.select().from(bipagensExpedicaoDetalhes).orderBy(desc(bipagensExpedicaoDetalhes.criadoEm));
+}
+
+export async function getBipagemExpedicaoDetalhesPorChave(chaveAcesso: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(bipagensExpedicaoDetalhes).where(eq(bipagensExpedicaoDetalhes.chaveAcesso, chaveAcesso)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updateNotaFiscalComDetalhes(id: number, dados: any) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await db.update(notasFiscais).set(dados).where(eq(notasFiscais.id, id));
 }

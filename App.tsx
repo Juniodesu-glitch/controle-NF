@@ -44,7 +44,12 @@ const AdminRoute = () => <ProtectedRoute component={Admin} requiredRole="admin" 
 
 function HomeRoute() {
   const { user } = useAuth();
-  return user ? <Dashboard /> : <Login />;
+  // Usuários normais são redirecionados para o conferente (prioridade)
+  // Apenas admins veem o dashboard
+  if (user?.role === "admin") {
+    return <Dashboard />;
+  }
+  return user ? <Conferente /> : <Login />;
 }
 
 function Router() {

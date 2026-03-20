@@ -36,6 +36,11 @@ export const notasFiscais = mysqlTable("notas_fiscais", {
   valor: decimal("valor", { precision: 12, scale: 2 }).notNull(),
   status: mysqlEnum("status", ["pendente", "faturada", "expedida", "entregue"]).default("pendente").notNull(),
   dataEmissao: timestamp("dataEmissao").notNull(),
+  // Novos campos para armazenar informações do abastecimento
+  pedido: varchar("pedido", { length: 100 }),
+  quantidadePecas: int("quantidadePecas"),
+  transportadora: varchar("transportadora", { length: 255 }),
+  chaveAcesso: varchar("chaveAcesso", { length: 44 }).unique(),
   criadoEm: timestamp("criadoEm").defaultNow().notNull(),
   atualizadoEm: timestamp("atualizadoEm").defaultNow().onUpdateNow().notNull(),
 });
@@ -88,3 +93,25 @@ export const solicitacoesAcesso = mysqlTable("solicitacoes_acesso", {
 
 export type SolicitacaoAcesso = typeof solicitacoesAcesso.$inferSelect;
 export type InsertSolicitacaoAcesso = typeof solicitacoesAcesso.$inferInsert;
+
+/**
+ * Bipagens Detalhadas de Expedição - Registro completo de cada bipagem do conferente
+ * Armazena código de barras, data/hora e informações da NF para auditoria e controle
+ */
+export const bipagensExpedicaoDetalhes = mysqlTable("bipagens_expedicao_detalhes", {
+  id: int("id").autoincrement().primaryKey(),
+  codigoBipado: varchar("codigoBipado", { length: 100 }).notNull(),
+  numeroNF: varchar("numeroNF", { length: 50 }),
+  chaveAcesso: varchar("chaveAcesso", { length: 44 }),
+  pedido: varchar("pedido", { length: 100 }),
+  nomeCliente: varchar("nomeCliente", { length: 255 }),
+  quantidadePecas: int("quantidadePecas"),
+  transportadora: varchar("transportadora", { length: 255 }),
+  usuarioId: int("usuarioId").notNull(),
+  dataHoraBipagem: timestamp("dataHoraBipagem").notNull(),
+  dataHoraManual: boolean("dataHoraManual").default(false).notNull(),
+  criadoEm: timestamp("criadoEm").defaultNow().notNull(),
+});
+
+export type BipagemExpedicaoDetalhes = typeof bipagensExpedicaoDetalhes.$inferSelect;
+export type InsertBipagemExpedicaoDetalhes = typeof bipagensExpedicaoDetalhes.$inferInsert;

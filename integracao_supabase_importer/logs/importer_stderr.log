@@ -1,6 +1,4 @@
-2026-03-16 07:07:39,907 [INFO] Importer started
-2026-03-16 07:07:39,908 [INFO] Source dir: C:\Users\junio.gomes\OneDrive - Capricórnio Têxtil S.A\nf--app2.0
-2026-03-16 07:07:39,909 [INFO] Poll seconds: 3
-2026-03-16 07:07:39,910 [INFO] IMPORTER_FORCE_CONTINUOUS enabled: RUN_ONCE will be ignored
-2026-03-16 07:07:41,332 [INFO] Importado: C:\Users\junio.gomes\OneDrive - Capricórnio Têxtil S.A\nf--app2.0\danfe_712907987.xml (NF 401070)
-2026-03-16 07:07:41,988 [INFO] Importado: C:\Users\junio.gomes\OneDrive - Capricórnio Têxtil S.A\nf--app2.0\danfe_726035440.xml (NF 401070)
+2026-03-18 18:39:04,002 [INFO] Importer started
+2026-03-18 18:39:04,003 [INFO] Source dir: C:\Users\junio.gomes\OneDrive - Capricórnio Têxtil S.A\nf--app2.0
+2026-03-18 18:39:04,003 [INFO] Poll seconds: 3
+2026-03-18 18:39:04,004 [INFO] IMPORTER_FORCE_CONTINUOUS enabled: RUN_ONCE will be ignored

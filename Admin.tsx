@@ -2,15 +2,16 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { LogOut, Users, FileText, Download, CheckCircle, XCircle, Clock, Settings } from "lucide-react";
+import { LogOut, Users, FileText, Download, CheckCircle, XCircle, Clock, Settings, Upload } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import ConfiguracoesNF from "@/ConfiguracoesNF";
+import ImportPanel from "@/ImportPanel";
 
 export default function Admin() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "relatorios" | "configuracoes">("solicitacoes");
+  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "import" | "relatorios" | "configuracoes">("solicitacoes");
 
   const solicitacoes = trpc.solicitacoes.listar.useQuery();
   const notasFiscais = trpc.notasFiscais.listar.useQuery();
@@ -101,6 +102,19 @@ export default function Admin() {
             <div className="flex items-center gap-2">
               <FileText size={18} />
               Notas Fiscais
+            </div>
+          </button>
+          <button
+            onClick={() => setActiveTab("import")}
+            className={`px-4 py-3 font-medium border-b-2 transition-colors ${
+              activeTab === "import"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Upload size={18} />
+              Importação
             </div>
           </button>
           <button
@@ -239,6 +253,14 @@ export default function Admin() {
                 <p className="text-muted-foreground">Nenhuma nota fiscal cadastrada</p>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Importação */}
+        {activeTab === "import" && (
+          <div>
+            <h2 className="text-2xl font-bold text-foreground mb-6">Importação de XMLs</h2>
+            <ImportPanel />
           </div>
         )}
 
