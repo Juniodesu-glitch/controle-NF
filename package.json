@@ -1,0 +1,12 @@
+{
+  "name": "controle-nf",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node nf-xml-server.js",
+    "dev": "node nf-xml-server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
