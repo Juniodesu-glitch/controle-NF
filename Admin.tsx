@@ -331,7 +331,7 @@ export default function Admin() {
         {activeTab === "relatorios" && (
           <div>
             <h2 className="text-2xl font-bold text-foreground mb-6">Exportar Relatórios</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="bg-card border border-border rounded-2xl p-6">
                 <FileText className="text-primary mb-4" size={32} />
                 <h3 className="text-lg font-semibold text-foreground mb-2">Notas Fiscais</h3>
@@ -373,6 +373,8 @@ export default function Admin() {
                   Exportar
                 </Button>
               </div>
+
+              <AdminNfBaseImport />
             </div>
           </div>
         )}

@@ -98,6 +98,12 @@ export default function AdminNfBaseImport() {
       return;
     }
 
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (extension !== 'csv') {
+      toast.error('Por enquanto a importação aceita apenas CSV.');
+      return;
+    }
+
     const text = await file.text();
     const parsed = parseCsvText(text);
     if (parsed.headers.length === 0) {
@@ -157,15 +163,20 @@ export default function AdminNfBaseImport() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <label className="block text-sm text-foreground">
-          Carregar base de NF
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-            className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-          />
-        </label>
+        <div className="rounded-2xl border border-border bg-secondary/80 p-6">
+          <p className="text-sm text-muted-foreground mb-3">Carregar base de NF</p>
+          <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-sm font-medium text-foreground transition hover:border-primary/50">
+            <Upload size={18} />
+            Selecionar arquivo
+            <input
+              type="file"
+              accept=".csv,.xls,.xlsx"
+              onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
+              className="hidden"
+            />
+          </label>
+          <p className="text-xs text-muted-foreground mt-3">Apenas arquivos CSV são aceitos no momento.</p>
+        </div>
         <div className="space-y-3">
           <div className="rounded-2xl border border-border bg-secondary/80 p-4">
             <p className="text-sm text-muted-foreground">Arquivo</p>
