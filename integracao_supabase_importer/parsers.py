@@ -185,9 +185,10 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
         peso_bruto += _to_float(p.text or "")
 
     itens: List[Dict[str, Any]] = []
-    total_qtd = 0.0
+    total_pcs = 0.0
     total_metros = 0.0
     artigo = "-"
+    artigos: List[str] = []
 
     for det in _find_all(root, "det"):
         prod = None
@@ -221,11 +222,18 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
             elif name == "vProd":
                 valor_item = _to_float(text)
 
+        if descricao:
+            artigos.append(descricao)
+
+        unidade_normalizada = (unidade or "").strip().lower()
+        if unidade_normalizada.startswith("m"):
+            total_metros += quantidade
+        else:
+            # Padrão em APP: quantidade representa peças
+            total_pcs += quantidade
+
         if artigo == "-" and descricao:
             artigo = descricao
-
-        total_qtd += quantidade
-        total_metros += quantidade
 
         itens.append(
             {
@@ -238,6 +246,9 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
             }
         )
 
+    if len(artigos) > 1:
+        artigo = "; ".join(dict.fromkeys(artigos))  # mantém ordem e remove duplicados
+
     return {
         "numero_nf": numero_nf,
         "chave_acesso": chave_acesso,
@@ -246,7 +257,7 @@ def parse_xml_nf(file_path: str) -> Dict[str, Any]:
         "cliente": cliente,
         "transportadora": transportadora,
         "artigo": artigo,
-        "quantidade_itens": total_qtd,
+        "quantidade_itens": total_pcs,
         "metros": total_metros,
         "peso_bruto": peso_bruto,
         "valor_total": valor_total,
@@ -482,14 +493,34 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
     artigo = "-"
     _prod_skip = {
         "COD. PRODUTO", "DESCRIÇÃO DOS PRODUTOS / SERVIÇOS", "NCM / SH", "CFOP",
-        "QUANT", "V. UNIT", "V. TOTAL", "BC. ICMS", "V. ICMS", "V. IPI",
+        "QUANT", "QUANTIDADE", "QTD", "PCS", "PEÇAS", "V. UNIT", "V. TOTAL", "BC. ICMS", "V. ICMS", "V. IPI",
         "ALIQ", "IPI", "ALIQ. ICMS", "CST", "DADOS ADICIONAIS",
-        "RESERVADO AO FISCO", "DADOS DO PRODUTO / SERVIÇOS",
+        "RESERVADO AO FISCO", "DADOS DO PRODUTO / SERVIÇOS", "DADOS DO PRODUTO(S)", "TOTAL",
         "0 - EMITENTE", "1 - EMITENTE",
     }
-    # Localiza a coluna "DESCRIÇÃO DOS PRODUTOS / SERVIÇOS" (ou "DADOS DO PRODUTO") e
-    # captura o primeiro texto que pareça uma descrição real, filtrando códigos de produto
-    # (textos onde dígitos superam letras, ex.: "2.DP007.101.000530").
+
+    def _is_valid_prod_description(value: str) -> bool:
+        if not value:
+            return False
+        txt = value.strip()
+        if len(txt) < 5:
+            return False
+        tupper = txt.upper()
+        if tupper in _prod_skip:
+            return False
+        if any(skip in tupper for skip in ("ALIQ", "IPI", "ICMS", "CST", "PESO", "TOTAL", "CFOP", "NCM")):
+            return False
+        alpha = sum(1 for c in txt if c.isalpha())
+        digit = sum(1 for c in txt if c.isdigit())
+        if alpha < 4 or alpha <= digit:
+            return False
+        if re.fullmatch(r"[\d.,/\-\s]+", txt):
+            return False
+        if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", txt):
+            return False
+        return True
+
+    # Localiza a coluna de produtos e extrai o primeiro item reconhecido como descrição
     _descr_start = None
     for i, t in enumerate(texts):
         if re.search(r"DESCRI[CÇ][AÃ]O\s+DOS\s+PRODUTOS", t, re.IGNORECASE):
@@ -497,23 +528,15 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
             break
     if _descr_start is None:
         for i, t in enumerate(texts):
-            if "DADOS DO PRODUTO" in t.upper():
+            if "DADOS DO PRODUTO" in t.upper() or "DADOS DO PRODUTO(S)" in t.upper():
                 _descr_start = i
                 break
+
     if _descr_start is not None:
-        for j in range(_descr_start + 1, min(_descr_start + 80, len(texts))):
-            t = texts[j].strip()
-            _alpha = sum(1 for c in t if c.isalpha())
-            _digit = sum(1 for c in t if c.isdigit())
-            if (
-                len(t) >= 5
-                and t.upper() not in _prod_skip
-                and not re.fullmatch(r"[\d.,/\-]+", t)
-                and not re.fullmatch(r"\d{3,8}", t)
-                and _alpha > _digit          # descrição tem mais letras que dígitos
-                and _alpha >= 4              # mínimo de conteúdo alfabético
-            ):
-                artigo = t
+        for j in range(_descr_start + 1, min(_descr_start + 100, len(texts))):
+            cand = texts[j].strip()
+            if _is_valid_prod_description(cand):
+                artigo = cand
                 break
 
     # ── Quantidade / metros ───────────────────────────────────────────────────
@@ -545,16 +568,172 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
                 if pedido != "-":
                     break
 
+    # ── Quantidades (PÇS vs METROS) ──────────────────────────────────────────
+    # Procura por campos específicos de quantidade e metros
+    # A lógica: se houver coluna "METROS" ou unidade iniciada com "m", trata como metro
+    # Caso contrário, é quantidade em peças (PÇS)
     for i, t in enumerate(texts):
-        if t.upper() in ("QUANT", "QUANTIDADE"):
-            for j in range(i + 1, min(i + 30, len(texts))):
+        t_upper = t.upper()
+        
+        # Campo de METROS (metro linear específico)
+        if t_upper in ("METROS", "METRO", "M"):
+            for j in range(i + 1, min(i + 8, len(texts))):
                 v = texts[j].strip()
-                if re.fullmatch(r"\d+[.,]\d+", v):
-                    total_qtd = _to_float(v)
-                    if total_qtd >= 1:
-                        total_metros = total_qtd
+                if re.fullmatch(r"\d+[.,]\d+|\d+", v):
+                    total_metros = _to_float(v)
                     break
+        
+        # Campo de QUANTIDADE em peças
+        elif t_upper in ("QUANT", "QUANTIDADE", "PCS", "PEÇAS", "PECAS", "UNIDADE"):
+            for j in range(i + 1, min(i + 8, len(texts))):
+                v = texts[j].strip()
+                if re.fullmatch(r"\d+[.,]\d+|\d+", v):
+                    total_qtd = _to_float(v)
+                    break
+
+    # ── Extração de múltiplos itens da tabela de produtos ───────────────────
+    itens: List[Dict[str, Any]] = []
+    
+    # Encontra o início da tabela de produtos
+    tabela_produtos_idx = None
+    for i, t in enumerate(texts):
+        if re.search(r"DESCRI[CÇ][AÃ]O\s+DOS\s+PRODUTOS", t, re.IGNORECASE) or "DADOS DO PRODUTO" in t.upper():
+            tabela_produtos_idx = i
             break
+    
+    if tabela_produtos_idx is not None:
+        # Procura por descrições de produtos após o cabeçalho da tabela
+        produtos_encontrados = []
+
+        def _is_table_header(line: str) -> bool:
+            line_up = line.strip().upper()
+            return line_up in {
+                "COD. PRODUTO", "CÓDIGO PRODUTO", "DESCRIÇÃO DOS PRODUTOS / SERVIÇOS", "DADOS DO PRODUTO", "DADOS DO PRODUTOS", "DADOS DO PRODUTO(S)",
+                "NCM / SH", "CFOP", "QUANT", "QUANTIDADE", "V. UNIT", "V. TOTAL", "BC. ICMS", "V. ICMS", "V. IPI", "ALIQ", "IPI", "ALIQ. ICMS", "CST"
+            }
+
+        def _is_valid_line(line: str) -> bool:
+            if not line or len(line.strip()) < 5:
+                return False
+            t = line.strip()
+            t_up = t.upper()
+            if _is_table_header(t):
+                return False
+            if any(skip in t_up for skip in ("ALIQ", "IPI", "ICMS", "CST", "PESO", "TOTAL", "CFOP", "NCM", "SERIE", "NF")):
+                return False
+            alpha = sum(1 for c in t if c.isalpha())
+            digit = sum(1 for c in t if c.isdigit())
+            if alpha < 4 or alpha <= digit:
+                return False
+            if re.fullmatch(r"[\d.,/\-\s]+", t):
+                return False
+            if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", t):
+                return False
+            if re.fullmatch(r"\d{3,8}", t):
+                return False
+            return True
+
+        row_texts = []
+        current_row_parts: List[str] = []
+
+        def _is_section_end(line: str) -> bool:
+            upper = line.upper()
+            return any(secao in upper for secao in ["DADOS ADICIONAIS", "RESERVADO AO FISCO", "CÁLCULO", "CALCULO", "FATURA", "TRANSPORTADOR"])
+
+        def _is_product_code(line: str) -> bool:
+            return bool(re.match(r"^\s*\d+\.[A-Z0-9]+\.[0-9]+\.[0-9]+", line.strip(), re.IGNORECASE))
+
+        for j in range(tabela_produtos_idx + 1, len(texts)):
+            t = texts[j].strip()
+            if not t:
+                continue
+            if _is_section_end(t):
+                break
+            if _is_table_header(t):
+                continue
+
+            if _is_product_code(t):
+                if current_row_parts:
+                    row_texts.append(" ".join(current_row_parts).strip())
+                current_row_parts = [t]
+            elif current_row_parts:
+                current_row_parts.append(t)
+            elif _is_valid_line(t):
+                row_texts.append(t)
+
+        if current_row_parts:
+            row_texts.append(" ".join(current_row_parts).strip())
+
+        for row_text in row_texts:
+            if not row_text:
+                continue
+
+            descricao = row_text
+            codigo = ""
+            unidade_item = "un"
+            quantidade_item = 0.0
+            valor_unitario_item = 0.0
+            valor_total_item = 0.0
+
+            m_code = re.match(r"^\s*(?P<code>\d+\.[A-Z0-9]+\.[0-9]+\.[0-9]+)\s+(?P<rest>.+)$", row_text, re.IGNORECASE)
+            if m_code:
+                codigo = m_code.group("code").strip()
+                rest = m_code.group("rest").strip()
+                tokens = rest.split()
+                ncm_idx = next((i for i, tok in enumerate(tokens) if re.fullmatch(r"\d{8}", tok)), None)
+                if ncm_idx is not None and ncm_idx >= 1:
+                    descricao = " ".join(tokens[:ncm_idx]).strip()
+                    if ncm_idx + 3 < len(tokens):
+                        unidade_item = tokens[ncm_idx + 3].strip().lower()
+                    if ncm_idx + 4 < len(tokens):
+                        quantidade_item = _to_float(tokens[ncm_idx + 4])
+                    if ncm_idx + 5 < len(tokens):
+                        valor_unitario_item = _to_float(tokens[ncm_idx + 5])
+                    if ncm_idx + 6 < len(tokens):
+                        valor_total_item = _to_float(tokens[ncm_idx + 6])
+
+            descricao = descricao.strip() or ""
+            if not _is_valid_line(descricao):
+                continue
+            if descricao in produtos_encontrados:
+                continue
+
+            produtos_encontrados.append(descricao)
+            itens.append({
+                "codigo": codigo,
+                "descricao": descricao,
+                "unidade": unidade_item,
+                "quantidade": quantidade_item,
+                "valor_unitario": valor_unitario_item,
+                "valor_total": valor_total_item,
+            })
+
+        # Se encontrou produtos, distribui as quantidades totais entre eles
+        if itens and (total_qtd > 0 or total_metros > 0):
+            num_itens = len(itens)
+            if total_metros > 0:
+                # Se tem metros, assume que todos os itens são metros
+                metros_por_item = total_metros / num_itens
+                for item in itens:
+                    item["quantidade"] = metros_por_item
+                    item["unidade"] = "m"
+            elif total_qtd > 0:
+                # Distribui peças igualmente entre os itens
+                qtd_por_item = total_qtd / num_itens
+                for item in itens:
+                    item["quantidade"] = qtd_por_item
+                    item["unidade"] = "un"
+    
+    # Fallback: se não encontrou itens na tabela, cria um item baseado no artigo extraído
+    if not itens and artigo and artigo != "-":
+        itens.append({
+            "codigo": "",
+            "descricao": artigo,
+            "unidade": "m" if total_metros > 0 else "un",
+            "quantidade": total_metros if total_metros > 0 else total_qtd,
+            "valor_unitario": 0.0,
+            "valor_total": valor_total,
+        })
 
     return {
         "numero_nf": numero_nf,
@@ -572,5 +751,5 @@ def parse_danfe_jasperprint_xml(file_path: str) -> Dict[str, Any]:
         "status": "pendente",
         "origem_xml": file_path,
         "origem_tipo": "danfe_xml",
-        "itens": [],
+        "itens": itens,
     }

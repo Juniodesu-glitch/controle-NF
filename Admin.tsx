@@ -1,8 +1,10 @@
 import { useState } from "react";
+import BipagemNF from "./BipagemNF";
+import ManualReportLookup from "./ManualReportLookup";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { LogOut, Users, FileText, Download, CheckCircle, XCircle, Clock, Settings, Upload } from "lucide-react";
+import { LogOut, Users, FileText, Download, CheckCircle, XCircle, Clock, Settings, Upload, Barcode } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import ConfiguracoesNF from "@/ConfiguracoesNF";
@@ -11,7 +13,20 @@ import ImportPanel from "@/ImportPanel";
 export default function Admin() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "import" | "relatorios" | "configuracoes">("solicitacoes");
+  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "import" | "relatorios" | "configuracoes" | "bipagemNF">("solicitacoes");
+  // NFs bipadas manualmente (admin pode ver todas)
+  const [nfsBipadas, setNfsBipadas] = useState<string[]>(() => {
+    const saved = localStorage.getItem("nfsBipadas");
+    return saved ? JSON.parse(saved) : [];
+  });
+  const handleAddNF = (nf: string) => {
+    setNfsBipadas((prev) => {
+      const next = [...prev, nf];
+      localStorage.setItem("nfsBipadas", JSON.stringify(next));
+      return next;
+    });
+    toast.success(`NF ${nf} adicionada à lista de bipagem manual!`);
+  };
 
   const solicitacoes = trpc.solicitacoes.listar.useQuery();
   const notasFiscais = trpc.notasFiscais.listar.useQuery();
@@ -72,6 +87,26 @@ export default function Admin() {
             Sair
           </Button>
         </div>
+        <button
+          onClick={() => setActiveTab("bipagemNF")}
+          className={`px-4 py-3 font-medium border-b-2 transition-colors ${
+            activeTab === "bipagemNF"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <Barcode size={18} />
+            Bipagem Manual NF
+          </div>
+        </button>
+              {/* Bipagem Manual de NF */}
+              {activeTab === "bipagemNF" && (
+                <div>
+                  <h2 className="text-2xl font-bold text-foreground mb-6">Bipagem Manual de NF</h2>
+                  <BipagemNF onAddNF={handleAddNF} nfs={nfsBipadas} />
+                </div>
+              )}
       </header>
 
       {/* Main Content */}
@@ -258,9 +293,15 @@ export default function Admin() {
 
         {/* Importação */}
         {activeTab === "import" && (
-          <div>
-            <h2 className="text-2xl font-bold text-foreground mb-6">Importação de XMLs</h2>
-            <ImportPanel />
+          <div className="space-y-8">
+            <div>
+              <h2 className="text-2xl font-bold text-foreground mb-6">Importação de XMLs</h2>
+              <ImportPanel />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-foreground mb-6">Importação Manual de Relatórios</h2>
+              <ManualReportLookup bipados={nfsBipadas} />
+            </div>
           </div>
         )}
 

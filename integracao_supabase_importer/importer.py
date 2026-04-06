@@ -97,7 +97,10 @@ def process_one_file(client: SupabaseClient, file_path: str, logger: logging.Log
                 logger.warning("Nao foi possivel ler conteudo XML: %s", file_path)
 
     nf_id = client.upsert_nf(parsed)
-    client.replace_nf_itens(nf_id, parsed.get("itens", []))
+    itens = parsed.get("itens", []) or []
+    if not itens:
+        logger.warning("NF %s (%s) importada sem itens identificados", parsed.get("numero_nf", "?"), file_path)
+    client.replace_nf_itens(nf_id, itens)
 
     client.add_import_log(
         arquivo=file_path,

@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import BipagemNF from "./BipagemNF";
+import ManualReportLookup from "./ManualReportLookup";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
@@ -10,6 +12,20 @@ export default function Faturista() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
   const [codigoBarras, setCodigoBarras] = useState("");
+  // NFs bipadas manualmente
+  const [nfsBipadas, setNfsBipadas] = useState<string[]>(() => {
+    const saved = localStorage.getItem("nfsBipadas")
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("nfsBipadas", JSON.stringify(nfsBipadas));
+  }, [nfsBipadas]);
+
+  const handleAddNF = (nf: string) => {
+    setNfsBipadas((prev) => [...prev, nf]);
+    toast.success(`NF ${nf} adicionada à lista de bipagem manual!`);
+  };
   const [usarDataManual, setUsarDataManual] = useState(false);
   const [dataHoraManual, setDataHoraManual] = useState(new Date().toISOString().slice(0, 16));
   const [ultimaBipagem, setUltimaBipagem] = useState<any>(null);
@@ -121,76 +137,14 @@ export default function Faturista() {
           </div>
         </div>
 
-        {/* Card de Bipagem */}
-        <div className="bg-card border border-border rounded-3xl p-8 shadow-lg mb-8 opacity-90">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="bg-blue-500/20 p-3 rounded-xl">
-              <Barcode className="text-blue-400" size={28} />
-            </div>
-            <h2 className="text-2xl font-bold text-foreground">Bipar Nota Fiscal (Faturamento)</h2>
-          </div>
-
-          {/* Input de Código de Barras */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-foreground mb-3">
-              Código de Barras / Número da NF
-            </label>
-            <input
-              ref={inputRef}
-              type="text"
-              value={codigoBarras}
-              onChange={(e) => setCodigoBarras(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && handleBipar()}
-              placeholder="Escaneie o código de barras ou digite o número da NF"
-              className="w-full px-4 py-4 bg-secondary border-2 border-border rounded-xl text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all text-lg"
-              autoFocus
-            />
-          </div>
-
-          {/* Opção de Data/Hora */}
-          <div className="mb-6 p-4 bg-secondary/50 rounded-xl border border-border">
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={usarDataManual}
-                onChange={(e) => setUsarDataManual(e.target.checked)}
-                className="w-5 h-5 rounded border-border cursor-pointer"
-              />
-              <span className="text-foreground font-medium">Usar data e hora manual</span>
-            </label>
-
-            {usarDataManual && (
-              <div className="mt-4">
-                <label className="block text-sm text-muted-foreground mb-2">
-                  Data e Hora
-                </label>
-                <input
-                  type="datetime-local"
-                  value={dataHoraManual}
-                  onChange={(e) => setDataHoraManual(e.target.value)}
-                  className="w-full px-4 py-2 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-blue-400"
-                />
-              </div>
-            )}
-
-            {!usarDataManual && (
-              <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                <Clock size={16} />
-                <span>Usando data e hora do sistema</span>
-              </div>
-            )}
-          </div>
-
-          {/* Botão Bipar */}
-          <Button
-            onClick={handleBipar}
-            disabled={biparMutation.isPending || !codigoBarras.trim()}
-            className="w-full h-14 text-lg font-semibold rounded-xl bg-blue-500 hover:bg-blue-600 text-white transition-all duration-200 flex items-center justify-center gap-2"
-          >
-            <Barcode size={24} />
-            {biparMutation.isPending ? "Processando..." : "Bipar Nota Fiscal"}
-          </Button>
+        {/* Bipagem Manual de NF */}
+        <div className="mb-8">
+          <BipagemNF onAddNF={handleAddNF} nfs={nfsBipadas} />
         </div>
+        <div className="mb-8">
+          <ManualReportLookup bipados={nfsBipadas} />
+        </div>
+        {/* ...bipagem antiga pode ser mantida abaixo, se necessário... */}
 
         {/* Última Bipagem */}
         {ultimaBipagem && (

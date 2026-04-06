@@ -419,16 +419,50 @@ function resolverArtigoProdutoDaNf(row) {
 }
 
 function mapNfRowToLocal(row) {
+    const itensDaNf = obterItensDaNotaPorId(row.id);
+
+    let artigo = resolverArtigoProdutoDaNf(row);
+    let quantidadeItens = Number(row.quantidade_itens || 0);
+    let metros = Number(row.metros || 0);
+
+    if (Array.isArray(itensDaNf) && itensDaNf.length > 0) {
+        const descricoes = itensDaNf
+            .map((item) => String(item?.descricao || '').trim())
+            .filter(Boolean);
+        if (descricoes.length > 0) {
+            artigo = Array.from(new Set(descricoes)).join(' • ');
+        }
+
+        const somaPcs = itensDaNf.reduce((acc, item) => {
+            const unidade = String(item?.unidade || '').trim().toLowerCase();
+            const qtd = Number(item?.quantidade || 0);
+            if (!Number.isFinite(qtd) || qtd <= 0) return acc;
+            if (unidade.startsWith('m')) return acc;
+            return acc + qtd;
+        }, 0);
+
+        const somaMetros = itensDaNf.reduce((acc, item) => {
+            const unidade = String(item?.unidade || '').trim().toLowerCase();
+            const qtd = Number(item?.quantidade || 0);
+            if (!Number.isFinite(qtd) || qtd <= 0) return acc;
+            if (unidade.startsWith('m')) return acc + qtd;
+            return acc;
+        }, 0);
+
+        if (somaPcs > 0) quantidadeItens = somaPcs;
+        if (somaMetros > 0) metros = somaMetros;
+    }
+
     return {
         id: row.id || Math.floor(Math.random() * 1_000_000_000),
         numero: row.numero_nf || row.numero || '',
         serie: row.serie || '1',
         cliente: row.cliente || 'Cliente não informado',
         transportadora: row.transportadora || 'Não informada',
-        artigo: resolverArtigoProdutoDaNf(row),
+        artigo,
         pedido: row.pedido || '-',
-        quantidadeItens: Number(row.quantidade_itens || 0),
-        metros: Number(row.metros || 0),
+        quantidadeItens,
+        metros,
         pesoBruto: Number(row.peso_bruto || 0),
         valor: String(row.valor_total ?? '0.00'),
         status: row.status || 'pendente',
@@ -1412,27 +1446,48 @@ async function buscarDadosNFNoSupabase(numeroNF) {
         if (!numeroNormalizado) return null;
 
         const mapRowToDadosNf = (row, itensDaNf = []) => {
-            const primeiroItem = Array.isArray(itensDaNf)
-                ? itensDaNf.find((item) => String(item?.descricao || '').trim())
-                : null;
+            const descricaoItens = Array.isArray(itensDaNf)
+            ? itensDaNf.map((item) => String(item?.descricao || '').trim()).filter(Boolean)
+            : [];
+        const artigoConsolidado = descricaoItens.length > 0
+            ? Array.from(new Set(descricaoItens)).join(' • ')
+            : resolverArtigoProdutoDaNf(row);
 
-            return ({
+        const totalPcs = Array.isArray(itensDaNf)
+            ? itensDaNf.reduce((acc, item) => {
+                const u = String(item?.unidade || '').trim().toLowerCase();
+                const qtd = Number(item?.quantidade || 0);
+                if (u.startsWith('m')) return acc;
+                return acc + (Number.isFinite(qtd) ? qtd : 0);
+              }, 0)
+            : Number(row.quantidade_itens || 0);
+
+        const totalMetros = Array.isArray(itensDaNf)
+            ? itensDaNf.reduce((acc, item) => {
+                const u = String(item?.unidade || '').trim().toLowerCase();
+                const qtd = Number(item?.quantidade || 0);
+                if (u.startsWith('m')) return acc + (Number.isFinite(qtd) ? qtd : 0);
+                return acc;
+              }, 0)
+            : Number(row.metros || 0);
+
+        return {
             encontrada: true,
             numeroNF: row.numero_nf,
             cliente: row.cliente,
             transportadora: row.transportadora,
-            produtoNome: primeiroItem ? String(primeiroItem.descricao || '') : resolverArtigoProdutoDaNf(row),
-            artigo: primeiroItem ? String(primeiroItem.descricao || '') : resolverArtigoProdutoDaNf(row),
+            produtoNome: artigoConsolidado,
+            artigo: artigoConsolidado,
             pedido: row.pedido,
-            quantidadeItens: row.quantidade_itens,
-            metros: row.metros,
+            quantidadeItens: Number.isFinite(totalPcs) ? totalPcs : Number(row.quantidade_itens || 0),
+            metros: Number.isFinite(totalMetros) ? totalMetros : Number(row.metros || 0),
             pesoBruto: row.peso_bruto,
             valorTotal: row.valor_total,
             dataEmissao: row.data_emissao,
             origemXml: row.origem_xml || '',
             itens: itensDaNf,
             nfId: row.id,
-        });
+        };
         };
 
         const carregarItensPorNfId = async (nfId) => {
@@ -1447,6 +1502,45 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             return Array.isArray(itensRows) ? itensRows.map(mapNfItemRowToLocal) : [];
         };
 
+        const consolidarDadosPorItens = (itensDaNf, row) => {
+            const dados = {
+                produtoNome: resolverArtigoProdutoDaNf(row),
+                artigo: resolverArtigoProdutoDaNf(row),
+                quantidadeItens: Number(row.quantidade_itens || 0),
+                metros: Number(row.metros || 0),
+            };
+
+            if (Array.isArray(itensDaNf) && itensDaNf.length > 0) {
+                const descricoes = itensDaNf
+                    .map((item) => String(item.descricao || '').trim())
+                    .filter(Boolean);
+                if (descricoes.length > 0) {
+                    dados.produtoNome = dados.artigo = Array.from(new Set(descricoes)).join(' • ');
+                }
+
+                const somaPcs = itensDaNf.reduce((acc, item) => {
+                    const unidade = String(item.unidade || '').trim().toLowerCase();
+                    const qtd = Number(item.quantidade || 0);
+                    if (!Number.isFinite(qtd) || qtd <= 0) return acc;
+                    if (unidade.startsWith('m')) return acc;
+                    return acc + qtd;
+                }, 0);
+
+                const somaMetros = itensDaNf.reduce((acc, item) => {
+                    const unidade = String(item.unidade || '').trim().toLowerCase();
+                    const qtd = Number(item.quantidade || 0);
+                    if (!Number.isFinite(qtd) || qtd <= 0) return acc;
+                    if (unidade.startsWith('m')) return acc + qtd;
+                    return acc;
+                }, 0);
+
+                if (somaPcs > 0) dados.quantidadeItens = somaPcs;
+                if (somaMetros > 0) dados.metros = somaMetros;
+            }
+
+            return dados;
+        };
+
         const variantes = Array.from(new Set([
             numeroNormalizado,
             numeroNormalizado.replace(/^0+/, '') || '0',
@@ -1459,7 +1553,8 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             );
             if (Array.isArray(rows) && rows.length > 0) {
                 const itensDaNf = await carregarItensPorNfId(rows[0]?.id);
-                return mapRowToDadosNf(rows[0], itensDaNf);
+                const dadosItens = consolidarDadosPorItens(itensDaNf, rows[0]);
+                return mapRowToDadosNf(rows[0], itensDaNf, dadosItens);
             }
         }
 
@@ -3329,7 +3424,7 @@ function renderizarFaturista() {
                 ...nf,
                 artigoLinha: String(item.descricao || nf.artigo || '-'),
                 quantidadeItensLinha: qtdItem > 0 ? qtdItem : Number(nf.quantidadeItens || 0),
-                metrosLinha: unidade.startsWith('m') ? qtdItem : Number(nf.metros || 0),
+                metrosLinha: unidade.startsWith('m') ? qtdItem : 0,
                 multiItem: itens.length > 1,
             };
         });
