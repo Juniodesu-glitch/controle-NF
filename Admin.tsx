@@ -374,7 +374,20 @@ export default function Admin() {
                 </Button>
               </div>
 
-              <AdminNfBaseImport />
+              <div className="bg-card border border-border rounded-2xl p-6 flex flex-col justify-between">
+                <Upload className="text-primary mb-4" size={32} />
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground mb-2">Base de NF</h3>
+                  <p className="text-sm text-muted-foreground mb-6">Importe ou consulte uma base de notas fiscais diretamente no admin.</p>
+                </div>
+                <Button
+                  onClick={() => setActiveTab("baseNF")}
+                  className="w-full flex items-center justify-center gap-2"
+                >
+                  <Upload size={18} />
+                  Abrir Base de NF
+                </Button>
+              </div>
             </div>
           </div>
         )}
