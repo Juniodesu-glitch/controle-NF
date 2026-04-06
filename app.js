@@ -1440,9 +1440,15 @@ function aplicarDadosXMLNaNota(nota, dadosXML) {
     }
 }
 
-async function buscarDadosNFNoSupabase(numeroNF) {
+async function buscarDadosNFNoSupabase(numeroNF, codigoBarrasOriginal = '') {
     try {
-        const numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
+        let numeroNormalizado = String(numeroNF || '').replace(/\D/g, '');
+        const chaveAcesso = String(codigoBarrasOriginal || numeroNF || '').replace(/\D/g, '');
+
+        if (!numeroNormalizado && chaveAcesso.length === 44) {
+            numeroNormalizado = extrairNumeroNF(chaveAcesso);
+        }
+
         if (!numeroNormalizado) return null;
 
         const mapRowToDadosNf = (row, itensDaNf = []) => {
@@ -1545,6 +1551,7 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             numeroNormalizado,
             numeroNormalizado.replace(/^0+/, '') || '0',
             numeroNormalizado.padStart(9, '0'),
+            numeroNormalizado.padStart(10, '0'),
         ]));
 
         for (const variante of variantes) {
@@ -1553,14 +1560,23 @@ async function buscarDadosNFNoSupabase(numeroNF) {
             );
             if (Array.isArray(rows) && rows.length > 0) {
                 const itensDaNf = await carregarItensPorNfId(rows[0]?.id);
-                const dadosItens = consolidarDadosPorItens(itensDaNf, rows[0]);
-                return mapRowToDadosNf(rows[0], itensDaNf, dadosItens);
+                return mapRowToDadosNf(rows[0], itensDaNf);
+            }
+        }
+
+        if (chaveAcesso.length === 44) {
+            const rowsPorChave = await supabaseRequest(
+                `${supabaseConfig.tables.nfs}?select=*&chave_acesso=eq.${encodeURIComponent(chaveAcesso)}&limit=1`
+            );
+            if (Array.isArray(rowsPorChave) && rowsPorChave.length > 0) {
+                const itensDaNf = await carregarItensPorNfId(rowsPorChave[0]?.id);
+                return mapRowToDadosNf(rowsPorChave[0], itensDaNf);
             }
         }
 
         // Fallback: algumas bases antigas podem ter salvo outro formato em numero_nf.
         const rowsPorLike = await supabaseRequest(
-            `${supabaseConfig.tables.nfs}?select=*&numero_nf=like.*${encodeURIComponent(numeroNormalizado)}&order=id.desc&limit=5`
+            `${supabaseConfig.tables.nfs}?select=*&numero_nf=like.*${encodeURIComponent(numeroNormalizado)}*&order=id.desc&limit=5`
         );
 
         if (Array.isArray(rowsPorLike) && rowsPorLike.length > 0) {
@@ -1654,7 +1670,7 @@ async function diagnosticarBuscaNF(numeroNF, codigoBarrasOriginal = '') {
     }
     resultado.fontes.push('Cache local: nao encontrada');
 
-    const supabase = await buscarDadosNFNoSupabase(numeroNormalizado || codigoBarrasOriginal);
+    const supabase = await buscarDadosNFNoSupabase(numeroNormalizado || codigoBarrasOriginal, codigoBarrasOriginal);
     if (supabase && supabase.encontrada) {
         resultado.fontes.push('Supabase/XML da pasta: encontrada');
         resultado.encontrada = true;
