@@ -113,7 +113,6 @@ export default function ManualReportLookup({ bipados }: ManualReportLookupProps)
     setResults([]);
 
     if (!file) {
-      setFiles((prev) => ({ ...prev, [sheet]: null }));
       setSheets((prev) => ({ ...prev, [sheet]: null }));
       setKeyColumns((prev) => ({ ...prev, [sheet]: "" }));
       setValueColumns((prev) => ({ ...prev, [sheet]: "" }));
@@ -181,12 +180,6 @@ export default function ManualReportLookup({ bipados }: ManualReportLookupProps)
   };
 
   const clearAll = () => {
-    setFiles({
-      Capa: null,
-      Itens: null,
-      "Notas Sem Remessa": null,
-      "Notas de Remessa": null,
-    });
     setSheets({
       Capa: null,
       Itens: null,
