@@ -1,6 +1,7 @@
 import { useState } from "react";
 import BipagemNF from "./BipagemNF";
 import ManualReportLookup from "./ManualReportLookup";
+import AdminNfBaseImport from "./AdminNfBaseImport";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
@@ -13,7 +14,7 @@ import ImportPanel from "@/ImportPanel";
 export default function Admin() {
   const { user, logout } = useAuth();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "import" | "relatorios" | "configuracoes" | "bipagemNF">("solicitacoes");
+  const [activeTab, setActiveTab] = useState<"solicitacoes" | "notas" | "import" | "relatorios" | "configuracoes" | "bipagemNF" | "baseNF">("solicitacoes");
   // NFs bipadas manualmente (admin pode ver todas)
   const [nfsBipadas, setNfsBipadas] = useState<string[]>(() => {
     const saved = localStorage.getItem("nfsBipadas");
@@ -150,6 +151,19 @@ export default function Admin() {
             <div className="flex items-center gap-2">
               <Upload size={18} />
               Importação
+            </div>
+          </button>
+          <button
+            onClick={() => setActiveTab("baseNF")}
+            className={`px-4 py-3 font-medium border-b-2 transition-colors ${
+              activeTab === "baseNF"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <FileText size={18} />
+              Base de NF
             </div>
           </button>
           <button
@@ -302,6 +316,14 @@ export default function Admin() {
               <h2 className="text-2xl font-bold text-foreground mb-6">Importação Manual de Relatórios</h2>
               <ManualReportLookup bipados={nfsBipadas} />
             </div>
+          </div>
+        )}
+
+        {/* Base de NF */}
+        {activeTab === "baseNF" && (
+          <div>
+            <h2 className="text-2xl font-bold text-foreground mb-6">Base de NF</h2>
+            <AdminNfBaseImport />
           </div>
         )}
 
