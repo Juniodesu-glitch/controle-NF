@@ -67,8 +67,10 @@ export default function AdminNfBaseImport() {
   const [rows, setRows] = useState<NfBaseRow[]>([]);
   const [numeroNfColumn, setNumeroNfColumn] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResult, setSearchResult] = useState<NfBaseRow | null>(null);
+  const [searchResult, setSearchResult] = useState<Record<string, any> | null>(null);
   const [fileName, setFileName] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importedCount, setImportedCount] = useState<number | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -90,6 +92,43 @@ export default function AdminNfBaseImport() {
 
   const persistBase = (nextHeaders: string[], nextRows: NfBaseRow[]) => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ headers: nextHeaders, rows: nextRows }));
+  };
+
+  const normalizeNumero = (value: string) => String(value || "").replace(/\D/g, "").trim();
+
+  const handleImportToSupabase = async () => {
+    if (rows.length === 0) {
+      toast.error("Carregue a base antes de importar para o Supabase.");
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const response = await fetch("/api/import/nf-base", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ rows }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Erro ao importar a base para o Supabase.");
+      }
+
+      const data = await response.json();
+      if (!data.ok) {
+        throw new Error(data.error || "Erro ao importar a base para o Supabase.");
+      }
+
+      setImportedCount(Number(data.imported || 0));
+      toast.success(`Base importada no Supabase com ${data.imported} registros.`);
+    } catch (error) {
+      toast.error((error as any)?.message || "Erro ao importar base para o Supabase.");
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const handleFileChange = async (file: File | null) => {
@@ -135,20 +174,38 @@ export default function AdminNfBaseImport() {
     toast.success("Base de NF removida.");
   };
 
-  const handleSearch = () => {
-    if (!searchQuery.trim() || !numeroNfColumn) {
-      toast.error("Informe um número de NF e escolha a coluna correta.");
+  const handleSearch = async () => {
+    const normalized = normalizeNumero(searchQuery);
+    if (!normalized) {
+      toast.error("Informe um número de NF válido para buscar no Supabase.");
       return;
     }
 
-    const normalized = String(searchQuery).trim();
-    const found = rows.find((row) => String(row[numeroNfColumn] || "").trim() === normalized);
-    if (found) {
-      setSearchResult(found);
-      toast.success("NF encontrada na base.");
-    } else {
-      setSearchResult(null);
-      toast.error("NF não encontrada na base.");
+    setSearchResult(null);
+    try {
+      const response = await fetch(`/api/import/nf-base?numero=${encodeURIComponent(normalized)}`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          toast.error("NF não encontrada no Supabase.");
+          return;
+        }
+        const text = await response.text();
+        throw new Error(text || "Erro ao consultar NF no Supabase.");
+      }
+
+      const data = await response.json();
+      if (!data.ok) {
+        throw new Error(data.error || "Erro ao consultar NF no Supabase.");
+      }
+
+      setSearchResult(data.nf);
+      toast.success("NF encontrada no Supabase.");
+    } catch (error) {
+      if ((error as any)?.message) {
+        toast.error((error as any).message);
+      } else {
+        toast.error("Erro ao consultar NF no Supabase.");
+      }
     }
   };
 
@@ -185,6 +242,18 @@ export default function AdminNfBaseImport() {
           <div className="rounded-2xl border border-border bg-secondary/80 p-4">
             <p className="text-sm text-muted-foreground">Registros</p>
             <p className="font-medium text-foreground">{rows.length}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-secondary/80 p-4 space-y-3">
+            <Button
+              onClick={handleImportToSupabase}
+              disabled={rows.length === 0 || isImporting}
+              className="w-full flex items-center justify-center gap-2"
+            >
+              {isImporting ? "Importando..." : "Importar base no Supabase"}
+            </Button>
+            {importedCount !== null && (
+              <p className="text-sm text-muted-foreground">{importedCount} registros importados no Supabase</p>
+            )}
           </div>
         </div>
       </div>
